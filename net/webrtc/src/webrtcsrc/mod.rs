@@ -36,6 +36,8 @@
 mod imp;
 mod pad;
 
+mod livekitwebrtcsrc;
+
 use crate::signaller::Signallable;
 use crate::signaller::WebRTCSignallerRole;
 use gst::prelude::*;
@@ -58,5 +60,14 @@ pub fn register(plugin: Option<&gst::Plugin>) -> Result<(), glib::BoolError> {
         "webrtcsrc",
         gst::Rank::Primary,
         WebRTCSrc::static_type(),
-    )
+    )?;
+
+    gst::Element::register(
+        plugin,
+        "livekitwebrtcsrc",
+        gst::Rank::Marginal,
+        livekitwebrtcsrc::LiveKitWebRTCSrc::static_type(),
+    )?;
+
+    Ok(())
 }
