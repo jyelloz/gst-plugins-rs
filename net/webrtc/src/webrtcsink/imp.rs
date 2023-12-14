@@ -4190,7 +4190,7 @@ impl ObjectImpl for LiveKitWebRTCSink {
         let element = self.obj();
         let ws = element.upcast_ref::<super::BaseWebRTCSink>().imp();
 
-        let _ = ws.set_signaller(LiveKitSignaller::default().upcast());
+        let _ = ws.set_signaller(LiveKitSignaller::new_producer().upcast());
     }
 }
 
