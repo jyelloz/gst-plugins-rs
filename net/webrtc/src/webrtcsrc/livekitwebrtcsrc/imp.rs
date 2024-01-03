@@ -282,8 +282,8 @@ impl LiveKitWebRTCSrc {
         self.settings.lock().unwrap().signaller.clone()
     }
 
-    fn producer_peer_id(&self) -> String {
-        self.signaller().property::<String>("producer-peer-id")
+    fn producer_peer_id(&self) -> Option<String> {
+        self.signaller().property::<Option<String>>("producer-peer-id")
     }
 
     // Maps the `webrtcbin` pad to our exposed source pad using the pad stream ID.
