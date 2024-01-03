@@ -415,6 +415,9 @@ impl Signaller {
             Some(id) if id == *peer_identity => {
                 gst::debug!(CAT, imp: self, "matching peer identity {id:?}");
             },
+            None => {
+                gst::debug!(CAT, imp: self, "catch-all mode, matching {participant:?}");
+            },
             _ => return,
         }
         let meta = Some(&participant.metadata)
@@ -526,7 +529,7 @@ impl SignallableImpl for Signaller {
             };
 
             let options = signal_client::SignalOptions {
-                auto_subscribe: false,
+                auto_subscribe: imp.is_subscriber() && imp.producer_peer_id().is_none(),
                 ..Default::default()
             };
             gst::debug!(CAT, imp: imp, "Connecting to {}", wsurl);
