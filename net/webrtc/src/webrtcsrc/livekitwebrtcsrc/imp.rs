@@ -104,17 +104,18 @@ impl ObjectImpl for LiveKitWebRTCSrc {
     }
 
     fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
+        let mut settings = self.settings.lock().unwrap();
         match pspec.name() {
             "signaller" => {
                 let signaller = value
                     .get::<Option<Signallable>>()
                     .expect("type checked upstream");
                 if let Some(signaller) = signaller {
-                    self.settings.lock().unwrap().signaller = signaller;
+                    settings.signaller = signaller;
                 }
             }
             "video-codecs" => {
-                self.settings.lock().unwrap().video_codecs = value
+                settings.video_codecs = value
                     .get::<gst::ArrayRef>()
                     .expect("type checked upstream")
                     .as_slice()
@@ -125,7 +126,7 @@ impl ObjectImpl for LiveKitWebRTCSrc {
                     .collect::<Vec<Codec>>()
             }
             "audio-codecs" => {
-                self.settings.lock().unwrap().audio_codecs = value
+                settings.audio_codecs = value
                     .get::<gst::ArrayRef>()
                     .expect("type checked upstream")
                     .as_slice()
@@ -136,16 +137,16 @@ impl ObjectImpl for LiveKitWebRTCSrc {
                     .collect::<Vec<Codec>>()
             }
             "stun-server" => {
-                self.settings.lock().unwrap().stun_server = value
+                settings.stun_server = value
                     .get::<Option<String>>()
                     .expect("type checked upstream");
             }
             "turn-servers" => {
-                let mut settings = self.settings.lock().unwrap();
+                let mut settings = settings;
                 settings.turn_servers = value.get::<gst::Array>().expect("type checked upstream");
             }
             "meta" => {
-                self.settings.lock().unwrap().meta = value
+                settings.meta = value
                     .get::<Option<gst::Structure>>()
                     .expect("type checked upstream")
             }
