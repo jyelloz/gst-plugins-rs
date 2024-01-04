@@ -43,6 +43,7 @@ struct Settings {
     auth_token: Option<String>,
     role: WebRTCSignallerRole,
     producer_peer_id: Option<String>,
+    excluded_produder_peer_ids: Vec<String>,
     timeout: u32,
 }
 
@@ -58,6 +59,7 @@ impl Default for Settings {
             auth_token: None,
             role: WebRTCSignallerRole::default(),
             producer_peer_id: None,
+            excluded_produder_peer_ids: vec![],
             timeout: DEFAULT_TRACK_PUBLISH_TIMEOUT,
         }
     }
@@ -110,6 +112,27 @@ impl Signaller {
         assert!(self.is_subscriber());
         let settings = self.settings.lock().ok()?;
         settings.producer_peer_id.clone()
+    }
+
+    fn auto_subscribe(&self) -> bool {
+        self.is_subscriber() && self.producer_peer_id().is_none() &&
+            self.excluded_producer_peer_ids_is_empty()
+    }
+
+    fn excluded_producer_peer_ids_is_empty(&self) -> bool {
+        assert!(self.is_subscriber());
+        self.settings.lock()
+            .unwrap()
+            .excluded_produder_peer_ids
+            .is_empty()
+    }
+
+    fn is_peer_excluded(&self, peer_id: &str) -> bool {
+        self.settings.lock()
+            .unwrap()
+            .excluded_produder_peer_ids
+            .iter()
+            .any(|id| id == peer_id)
     }
 
     fn require_signal_client(&self) -> Arc<signal_client::SignalClient> {
@@ -416,6 +439,10 @@ impl Signaller {
                 gst::debug!(CAT, imp: self, "matching peer identity {id:?}");
             },
             None => {
+                if self.is_peer_excluded(peer_sid) || self.is_peer_excluded(peer_identity) {
+                    gst::debug!(CAT, imp: self, "ignoring excluded peer {participant:?}");
+                    return;
+                }
                 gst::debug!(CAT, imp: self, "catch-all mode, matching {participant:?}");
             },
             _ => return,
@@ -529,7 +556,7 @@ impl SignallableImpl for Signaller {
             };
 
             let options = signal_client::SignalOptions {
-                auto_subscribe: imp.is_subscriber() && imp.producer_peer_id().is_none(),
+                auto_subscribe: imp.auto_subscribe(),
                 ..Default::default()
             };
             gst::debug!(CAT, imp: imp, "Connecting to {}", wsurl);
@@ -788,6 +815,12 @@ impl ObjectImpl for Signaller {
                     .blurb("When in Consumer Role, the signaller will subscribe to this peer's tracks.")
                     .flags(glib::ParamFlags::READWRITE)
                     .build(),
+                gst::ParamSpecArray::builder("excluded-producer-peer-ids")
+                    .nick("Excluded Producer Peer IDs")
+                    .blurb("When in Consumer Role, the signaller will not subscribe to these peers' tracks.")
+                    .flags(glib::ParamFlags::READWRITE)
+                    .element_spec(&glib::ParamSpecString::builder("producer-peer-id").build())
+                    .build(),
             ]
         });
 
@@ -826,6 +859,16 @@ impl ObjectImpl for Signaller {
             }
             "producer-peer-id" => {
                 settings.producer_peer_id = value.get().unwrap()
+            }
+            "excluded-producer-peer-ids" => {
+                settings.excluded_produder_peer_ids = value
+                    .get::<gst::ArrayRef>()
+                    .expect("type checked upstream")
+                    .as_slice()
+                    .iter()
+                    .filter_map(|id| id.get::<&str>().ok())
+                    .map(|id| id.to_string())
+                    .collect::<Vec<String>>()
             }
             _ => unimplemented!(),
         }
