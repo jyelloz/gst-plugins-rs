@@ -155,29 +155,26 @@ impl ObjectImpl for LiveKitWebRTCSrc {
     }
 
     fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
+        let settings = self.settings.lock().unwrap();
         match pspec.name() {
-            "signaller" => self.settings.lock().unwrap().signaller.to_value(),
+            "signaller" => settings.signaller.to_value(),
             "video-codecs" => gst::Array::new(
-                self.settings
-                    .lock()
-                    .unwrap()
+                settings
                     .video_codecs
                     .iter()
                     .map(|v| &v.name),
             )
             .to_value(),
             "audio-codecs" => gst::Array::new(
-                self.settings
-                    .lock()
-                    .unwrap()
+                settings
                     .audio_codecs
                     .iter()
                     .map(|v| &v.name),
             )
             .to_value(),
-            "stun-server" => self.settings.lock().unwrap().stun_server.to_value(),
-            "turn-servers" => self.settings.lock().unwrap().turn_servers.to_value(),
-            "meta" => self.settings.lock().unwrap().meta.to_value(),
+            "stun-server" => settings.stun_server.to_value(),
+            "turn-servers" => settings.turn_servers.to_value(),
+            "meta" => settings.meta.to_value(),
             name => panic!("{} getter not implemented", name),
         }
     }
