@@ -342,6 +342,17 @@ impl Signaller {
                             vec![]
                         };
 
+                        let layers = if mtype == proto::TrackType::Video {
+                            vec![
+                                proto::VideoLayer {
+                                    quality: proto::VideoQuality::High as i32,
+                                    ..Default::default()
+                                },
+                            ]
+                        } else {
+                            vec![]
+                        };
+
                         let req = proto::AddTrackRequest {
                             cid: trackid.to_string(),
                             name: mid.clone(),
