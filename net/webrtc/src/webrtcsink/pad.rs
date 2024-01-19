@@ -18,6 +18,8 @@ pub struct WebRTCSinkPad {
 #[derive(Debug, Default)]
 struct Settings {
     msid: Option<String>,
+    mid: Option<String>,
+    rid: Option<String>,
 }
 
 #[glib::object_subclass]
@@ -35,6 +37,14 @@ impl ObjectImpl for WebRTCSinkPad {
                     .flags(glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_READY)
                     .blurb("Remote MediaStream ID in use for this pad")
                     .build(),
+                glib::ParamSpecString::builder("mid")
+                    .flags(glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_READY)
+                    .blurb("The Media Identification (MID) value to produce from this pad")
+                    .build(),
+                glib::ParamSpecString::builder("rid")
+                    .flags(glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_READY)
+                    .blurb("The RtpStreamId (RID) value to produce from this pad")
+                    .build(),
             ]
         });
         PROPS.as_ref()
@@ -46,6 +56,14 @@ impl ObjectImpl for WebRTCSinkPad {
                 settings.msid = value.get::<Option<String>>()
                     .expect("type checked upstream")
             }
+            "mid" => {
+                settings.mid = value.get::<Option<String>>()
+                    .expect("type checked upstream")
+            }
+            "rid" => {
+                settings.rid = value.get::<Option<String>>()
+                    .expect("type checked upstream")
+            }
             name => panic!("no writable property {name:?}"),
         }
     }
@@ -53,6 +71,8 @@ impl ObjectImpl for WebRTCSinkPad {
         let settings = self.settings.lock().unwrap();
         match pspec.name() {
             "msid" => settings.msid.to_value(),
+            "mid" => settings.mid.to_value(),
+            "rid" => settings.rid.to_value(),
             name => panic!("no readable property {name:?}"),
         }
     }
