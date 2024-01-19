@@ -48,6 +48,8 @@ const D3D11_MEMORY_FEATURE: &str = "memory:D3D11Memory";
 
 const RTP_TWCC_URI: &str =
     "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01";
+const RTP_MID_URI: &str = "urn:ietf:params:rtp-hdrext:sdes:mid";
+const RTP_STREAMID_URI: &str = "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id";
 
 const DEFAULT_STUN_SERVER: Option<&str> = Some("stun://stun.l.google.com:19302");
 const DEFAULT_MIN_BITRATE: u32 = 1000;
@@ -70,6 +72,31 @@ const DEFAULT_START_BITRATE: u32 = 2048000;
  * that it is not worth it below that threshold */
 #[cfg(feature = "v1_22")]
 const DO_FEC_THRESHOLD: u32 = 2000000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u32)]
+/// Internally-unique numerical ID for each RTP extension
+enum RtpExtensionId {
+    TWCC = 1,
+    MID,
+    RID,
+}
+
+impl RtpExtensionId {
+    pub fn id(self) -> u32 {
+        self as u32
+    }
+    pub fn uri(&self) -> &'static str {
+        match self {
+            Self::TWCC => RTP_TWCC_URI,
+            Self::MID => RTP_MID_URI,
+            Self::RID => RTP_STREAMID_URI,
+        }
+    }
+    pub fn add_to_caps(&self, caps: &mut gst::CapsRef) {
+        caps.set(format!("extmap-{}", self.id()), self.uri());
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 struct CCInfo {
@@ -204,6 +231,8 @@ struct InputStream {
     is_video: bool,
     /// Whether initial discovery has started
     initial_discovery_started: bool,
+    // The m-line index of this stream
+    mline_index: Option<u32>,
 }
 
 /// Wrapper around webrtcbin pads
@@ -212,6 +241,7 @@ struct WebRTCPad {
     pad: gst::Pad,
     /// The (fixed) caps of the corresponding input stream
     in_caps: gst::Caps,
+    payloader_caps: gst::Caps,
     /// The m= line index in the SDP
     media_idx: u32,
     ssrc: u32,
@@ -219,8 +249,24 @@ struct WebRTCPad {
     /// When None, the pad was only created to mark its transceiver
     /// as inactive (in the case where we answer an offer).
     stream_name: Option<String>,
+    /// The user-specified MID attribute for simulcasts
+    stream_mid: Option<String>,
+    /// The user-specified RID attribute for simulcasts
+    stream_rid: Option<String>,
     /// The payload selected in the answer, None at first
     payload: Option<i32>,
+}
+
+impl WebRTCPad {
+    pub fn transceiver(&self) -> gst_webrtc::WebRTCRTPTransceiver {
+        self.pad.property("transceiver")
+    }
+    pub fn mid(&self) -> Option<String> {
+        self.transceiver().mid().map(String::from)
+    }
+    pub fn rid(&self) -> Option<String> {
+        self.stream_rid.clone()
+    }
 }
 
 /// Wrapper around GStreamer encoder element, keeps track of factory
@@ -239,6 +285,88 @@ pub struct VideoEncoder {
     pub transceiver: gst_webrtc::WebRTCRTPTransceiver,
 }
 
+/// Each component of a simulcast shares the same webrtcbin sinkpad and MID.
+/// RTP packets from all simulcast components are merged into a rtpfunnel.
+/// The capsfilter is used to specify the details for the offer creation and connects to the
+/// webrtcbin's sinkpad
+struct Simulcast {
+    funnel: gst::Element,
+    capsfilter: gst::Element,
+    webrtcbin_pad: gst::Pad,
+}
+
+impl Simulcast {
+    pub fn set_caps(&self, caps: gst::Caps) {
+        self.capsfilter.set_property("caps", caps)
+    }
+    fn video_caps_to_restrictions(structure: &gst::StructureRef) -> String {
+        let max_width = structure
+            .get::<i32>("width")
+            .ok()
+            .map(|width| format!("max-width={width}"));
+        let max_height = structure
+            .get::<i32>("height")
+            .ok()
+            .map(|height| format!("max-height={height}"));
+
+        max_width
+            .into_iter()
+            .chain(max_height.into_iter())
+            .collect::<Vec<_>>()
+            .join(";")
+    }
+    pub fn add_rid_to_caps_structure(
+        rid: &str,
+        caps: &mut gst::Structure,
+        video_caps: Option<&gst::Caps>,
+    ) {
+        caps.set(
+            format!("rid-{rid}"),
+            Some(&Self::format_rid_restrictions(video_caps)),
+        );
+    }
+    pub fn add_rid_to_caps(rid: &str, caps: &mut gst::CapsRef, video_caps: Option<&gst::Caps>) {
+        caps.set(
+            format!("rid-{rid}"),
+            Some(&Self::format_rid_restrictions(video_caps)),
+        );
+    }
+    pub fn format_rid_restrictions(video_caps: Option<&gst::Caps>) -> String {
+        if let Some(caps) = video_caps {
+            let restrictions = caps
+                .structure(0)
+                .map(Self::video_caps_to_restrictions)
+                .unwrap_or_default();
+            format!("send {restrictions}")
+        } else {
+            format!("send")
+        }
+    }
+
+}
+
+/// Expresses a group of Pads that contribute to a single track.
+/// Each track is grouped by MID and discriminated by RID.
+#[derive(Default)]
+struct Simulcasts {
+    simulcasts: HashMap<String, Simulcast>,
+}
+
+impl Simulcasts {
+    pub fn get(&self, mid: &str) -> Option<&Simulcast> {
+        self.simulcasts.get(mid)
+    }
+    pub fn insert(&mut self, mid: String, simulcast: Simulcast) -> Option<Simulcast> {
+        self.simulcasts.insert(mid, simulcast)
+    }
+    pub fn iter(&self) -> std::collections::hash_map::Iter<String, Simulcast> {
+        self.simulcasts.iter()
+    }
+    pub fn funnel(&self, mid: &str) -> Option<gst::Element> {
+        self.get(mid).map(|simulcast| simulcast.funnel.clone())
+    }
+}
+
 struct Session {
     id: String,
 
@@ -247,6 +375,7 @@ struct Session {
     #[cfg(feature = "v1_22")]
     rtprtxsend: Option<gst::Element>,
     webrtc_pads: HashMap<u32, WebRTCPad>,
+    simulcasts: Simulcasts,
     peer_id: String,
     encoders: Vec<VideoEncoder>,
 
@@ -766,6 +895,26 @@ fn configure_encoder(enc: &gst::Element, start_bitrate: u32) {
     }
 }
 
+#[derive(Debug)]
+struct EncodingRtpExtensions {
+    /// The TWCC ID to use for payloaded stream
+    twcc: Option<u32>,
+    /// The Media Identification extension ID and value of payloaded stream
+    mid: Option<(u32, String)>,
+    /// The RtpStreamId extension ID and value of payloaded stream
+    rid: Option<(u32, String)>,
+}
+
+impl Default for EncodingRtpExtensions {
+    fn default() -> Self {
+        Self {
+            twcc: Some(RtpExtensionId::TWCC.id()),
+            mid: None,
+            rid: None,
+        }
+    }
+}
+
 /// Set of elements used in an EncodingChain
 struct EncodingChain {
     raw_filter: Option<gst::Element>,
@@ -784,8 +933,7 @@ struct EncodingChainBuilder {
     /// Filter element between the encoder and the payloader.
     encoded_filter: Option<gst::Element>,
     ssrc: Option<u32>,
-    /// The TWCC ID to use for payloaded stream
-    twcc: Option<u32>,
+    extensions: EncodingRtpExtensions,
 }
 
 impl EncodingChainBuilder {
@@ -801,7 +949,7 @@ impl EncodingChainBuilder {
             codec: codec.clone(),
             encoded_filter,
             ssrc: None,
-            twcc: None,
+            extensions: EncodingRtpExtensions::default(),
         }
     }
 
@@ -811,7 +959,17 @@ impl EncodingChainBuilder {
     }
 
     fn twcc(mut self, twcc: u32) -> Self {
-        self.twcc = Some(twcc);
+        self.extensions.twcc = Some(twcc);
+        self
+    }
+
+    fn mid(mut self, id: u32, value: String) -> Self {
+        self.extensions.mid = Some((id, value));
+        self
+    }
+
+    fn rid(mut self, id: u32, value: String) -> Self {
+        self.extensions.rid = Some((id, value));
         self
     }
 
@@ -820,11 +978,12 @@ impl EncodingChainBuilder {
             CAT,
             obj: pipeline,
             "Setting up encoding, input caps: {input_caps}, \
-                    output caps: {output_caps}, codec: {codec:?}, twcc: {twcc:?}",
+                    output caps: {output_caps}, codec: {codec:?}, \
+                    extensions: {extensions:?}",
             input_caps = self.input_caps,
             output_caps = self.output_caps,
             codec = self.codec,
-            twcc = self.twcc,
+            extensions = self.extensions,
         );
 
         let needs_encoding = is_raw_caps(&self.input_caps);
@@ -890,13 +1049,31 @@ impl EncodingChainBuilder {
          * concept of *transport-wide* congestion control, and firefox doesn't
          * provide feedback for audio packets.
          */
-        if let Some(idx) = self.twcc {
+        if let Some(idx) = self.extensions.twcc {
             if let Some(twcc_extension) = gst_rtp::RTPHeaderExtension::create_from_uri(RTP_TWCC_URI)
             {
                 twcc_extension.set_id(idx);
                 pay.emit_by_name::<()>("add-extension", &[&twcc_extension]);
             } else {
                 anyhow::bail!("Failed to add TWCC extension, make sure 'gst-plugins-good:rtpmanager' is installed");
+            }
+        }
+        if let Some((idx, value)) = self.extensions.mid {
+            if let Some(ext) = gst_rtp::RTPHeaderExtension::create_from_uri(RTP_MID_URI) {
+                ext.set_id(idx);
+                ext.set_property("mid", value);
+                pay.emit_by_name::<()>("add-extension", &[&ext]);
+            } else {
+                anyhow::bail!("Failed to add MID extension, make sure 'gst-plugins-good:rtpmanager' is installed");
+            }
+        }
+        if let Some((idx, value)) = self.extensions.rid {
+            if let Some(ext) = gst_rtp::RTPHeaderExtension::create_from_uri(RTP_STREAMID_URI) {
+                ext.set_id(idx);
+                ext.set_property("rid", value);
+                pay.emit_by_name::<()>("add-extension", &[&ext]);
+            } else {
+                anyhow::bail!("Failed to add RID extension, make sure 'gst-plugins-good:rtpmanager' is installed");
             }
         }
         elements.push(pay);
@@ -1165,6 +1342,7 @@ impl Session {
             stats: gst::Structure::new_empty("application/x-webrtc-stats"),
             sdp: None,
             webrtc_pads: HashMap::new(),
+            simulcasts: Simulcasts::default(),
             encoders: Vec::new(),
             links: HashMap::new(),
             stats_sigid: None,
@@ -1254,7 +1432,7 @@ impl Session {
 
         let output_caps = codec.output_filter().unwrap_or_else(gst::Caps::new_any);
 
-        let encoding_chain = EncodingChainBuilder::new(
+        let mut encoding_chain = EncodingChainBuilder::new(
             &webrtc_pad.in_caps,
             &output_caps,
             &codec,
@@ -1263,8 +1441,20 @@ impl Session {
                 &[&Some(&self.peer_id), &stream_name, &codec.caps],
             ),
         )
-        .ssrc(webrtc_pad.ssrc)
-        .build(&self.pipeline, &appsrc)?;
+        .ssrc(webrtc_pad.ssrc);
+        if let Some(mid) = webrtc_pad.mid() {
+            encoding_chain = encoding_chain.mid(
+                RtpExtensionId::MID.id(),
+                mid,
+            );
+        }
+        if let Some(rid) = webrtc_pad.stream_rid.clone() {
+            encoding_chain = encoding_chain.rid(
+                RtpExtensionId::RID.id(),
+                rid,
+            );
+        }
+        let encoding_chain = encoding_chain.build(&self.pipeline, &appsrc)?;
 
         if let Some(ref enc) = encoding_chain.encoder {
             element.emit_by_name::<bool>("encoder-setup", &[&self.peer_id, &stream_name, &enc]);
@@ -1277,9 +1467,7 @@ impl Session {
         // conflict with what the peer actually requested (see webrtcbin's
         // caps query implementation), and instead install a capsfilter downstream
         // of the payloader with caps constructed from the relevant SDP media.
-        let transceiver = webrtc_pad
-            .pad
-            .property::<gst_webrtc::WebRTCRTPTransceiver>("transceiver");
+        let transceiver = webrtc_pad.transceiver();
         transceiver.set_property("codec-preferences", None::<gst::Caps>);
 
         let mut global_caps = gst::Caps::new_empty_simple("application/x-unknown");
@@ -1301,13 +1489,16 @@ impl Session {
         let mut filtered_s = gst::Structure::new_empty("application/x-rtp");
 
         filtered_s.extend(s.iter().filter_map(|(key, value)| {
-            if key.starts_with("a-") {
+            if key.starts_with("a-") || key.starts_with("rid-") {
                 None
             } else {
                 Some((key, value.to_owned()))
             }
         }));
         filtered_s.set("ssrc", webrtc_pad.ssrc);
+        if let Some(rid) = &webrtc_pad.stream_rid {
+            Simulcast::add_rid_to_caps_structure(rid, &mut filtered_s, Some(&webrtc_pad.in_caps));
+        }
 
         let caps = gst::Caps::builder_full().structure(filtered_s).build();
 
@@ -1363,9 +1554,19 @@ impl Session {
         encoding_chain.pay_filter.link(&pay_filter)?;
 
         let srcpad = pay_filter.static_pad("src").unwrap();
-
+        let sinkpad = if let Some(funnel) = webrtc_pad.mid()
+            .as_ref()
+            .and_then(|mid| self.simulcasts.funnel(mid))
+        {
+            gst::debug!(CAT, obj: element, "using simulcast funnel pad");
+            funnel.request_pad_simple("sink_%u")
+                .ok_or_else(|| anyhow::anyhow!("failed to request funnel pad"))?
+        } else {
+            gst::debug!(CAT, obj: element, "using singlecast webrtcbin pad");
+            webrtc_pad.pad.clone()
+        };
         srcpad
-            .link(&webrtc_pad.pad)
+            .link(&sinkpad)
             .with_context(|| format!("Connecting input stream for {}", self.peer_id))?;
 
         match producer.add_consumer(&appsrc) {
@@ -1439,6 +1640,37 @@ impl InputStream {
     fn msid(&self) -> Option<String> {
         self.sink_pad.property("msid")
     }
+
+    fn mid(&self) -> Option<String> {
+        self.sink_pad.property("mid")
+    }
+
+    fn rid(&self) -> Option<String> {
+        self.sink_pad.property("rid")
+    }
+
+    fn mid_and_rid(&self) -> Option<(String, String)> {
+        self.mid().zip(self.rid())
+    }
+
+    fn compute_mline_indexes(streams: &mut [Self]) {
+        let mut mlines_by_mid = HashMap::new();
+        let mut index = 0;
+        for stream in streams {
+            if let Some(mid) = stream.mid() {
+                let entry = mlines_by_mid.entry(mid.clone())
+                    .or_insert_with(|| {
+                        let current_index = index;
+                        index += 1;
+                        current_index
+                    });
+                stream.mline_index = Some(*entry);
+            } else {
+                stream.mline_index = Some(index);
+                index += 1;
+            }
+        }
+    }
 }
 
 impl NavigationEventHandler {
@@ -1471,9 +1703,9 @@ impl NavigationEventHandler {
 }
 
 impl BaseWebRTCSink {
-    fn generate_ssrc(
+    fn generate_ssrc<V>(
         element: &super::BaseWebRTCSink,
-        webrtc_pads: &HashMap<u32, WebRTCPad>,
+        webrtc_pads: &HashMap<u32, V>,
     ) -> u32 {
         loop {
             let ret = fastrand::u32(..);
@@ -1490,11 +1722,11 @@ impl BaseWebRTCSink {
         webrtcbin: &gst::Element,
         webrtc_pads: &mut HashMap<u32, WebRTCPad>,
         is_video: bool,
+        media_idx: u32,
     ) {
         let ssrc = BaseWebRTCSink::generate_ssrc(element, webrtc_pads);
-        let media_idx = webrtc_pads.len() as i32;
 
-        let Some(pad) = webrtcbin.request_pad_simple(&format!("sink_{}", media_idx)) else {
+        let Some(pad) = webrtcbin.request_pad_simple("sink_%u") else {
             gst::error!(CAT, obj: element, "Failed to request pad from webrtcbin");
             gst::element_error!(
                 element,
@@ -1522,9 +1754,12 @@ impl BaseWebRTCSink {
             WebRTCPad {
                 pad,
                 in_caps: gst::Caps::new_empty(),
-                media_idx: media_idx as u32,
+                payloader_caps,
+                media_idx,
                 ssrc,
                 stream_name: None,
+                stream_mid: None,
+                stream_rid: None,
                 payload: None,
             },
         );
@@ -1537,10 +1772,11 @@ impl BaseWebRTCSink {
         media: Option<&gst_sdp::SDPMediaRef>,
         settings: &Settings,
         webrtc_pads: &mut HashMap<u32, WebRTCPad>,
+        simulcasts: &Simulcasts,
         codecs: &mut BTreeMap<i32, Codec>,
+        media_idx: u32,
     ) {
         let ssrc = BaseWebRTCSink::generate_ssrc(element, webrtc_pads);
-        let media_idx = webrtc_pads.len() as i32;
 
         let mut payloader_caps = match media {
             Some(media) => {
@@ -1583,10 +1819,9 @@ impl BaseWebRTCSink {
                 webrtcbin,
                 webrtc_pads,
                 stream.is_video,
+                media_idx,
             );
         } else {
-            let payloader_caps_mut = payloader_caps.make_mut();
-            payloader_caps_mut.set("ssrc", ssrc);
 
             gst::info!(
                 CAT,
@@ -1595,46 +1830,61 @@ impl BaseWebRTCSink {
                 payloader_caps
             );
 
-            let Some(pad) = webrtcbin.request_pad_simple(&format!("sink_{}", media_idx)) else {
-                gst::error!(CAT, obj: element, "Failed to request pad from webrtcbin");
-                gst::element_error!(
-                    element,
-                    gst::StreamError::Failed,
-                    ["Failed to request pad from webrtcbin"]
-                );
-                return;
-            };
-
-            if let Some(msid) = stream.msid() {
-                gst::trace!(CAT, obj: element, "forwarding msid={msid:?} to webrtcbin sinkpad");
-                pad.set_property("msid", &msid);
-            }
-
-            let transceiver = pad.property::<gst_webrtc::WebRTCRTPTransceiver>("transceiver");
-
-            transceiver.set_property(
-                "direction",
-                gst_webrtc::WebRTCRTPTransceiverDirection::Sendonly,
-            );
-
-            transceiver.set_property("codec-preferences", &payloader_caps);
-
-            if stream.sink_pad.name().starts_with("video_") {
-                if settings.do_fec {
-                    transceiver.set_property("fec-type", gst_webrtc::WebRTCFECType::UlpRed);
+            let payloader_caps_mut = payloader_caps.make_mut();
+            payloader_caps_mut.set("ssrc", ssrc);
+            let pad = if let Some(((_, rid), simulcast)) = stream.mid_and_rid()
+                .filter(|_| stream.is_video)
+                .and_then(|(mid, rid)| Some((mid.clone(), rid)).zip(simulcasts.get(&mid))) {
+                let Simulcast { webrtcbin_pad: pad, .. } = simulcast;
+                Simulcast::add_rid_to_caps(&rid, payloader_caps_mut, stream.in_caps.as_ref());
+                gst::debug!(CAT, obj: element, "have simulcast pad {:?}, mline={media_idx}, ssrc={ssrc}, rid={rid}", pad.name());
+                pad.clone()
+            } else {
+                let Some(pad) = webrtcbin.request_pad_simple("sink_%u") else {
+                    gst::error!(CAT, obj: element, "Failed to request pad from webrtcbin");
+                    gst::element_error!(
+                        element,
+                        gst::StreamError::Failed,
+                        ["Failed to request pad from webrtcbin"]
+                    );
+                    return;
+                };
+                if let Some(msid) = stream.msid() {
+                    gst::trace!(CAT, obj: element, "forwarding msid={msid:?} to webrtcbin sinkpad");
+                    pad.set_property("msid", &msid);
                 }
 
-                transceiver.set_property("do-nack", settings.do_retransmission);
-            }
+                let transceiver = pad.property::<gst_webrtc::WebRTCRTPTransceiver>("transceiver");
+
+                transceiver.set_property(
+                    "direction",
+                    gst_webrtc::WebRTCRTPTransceiverDirection::Sendonly,
+                );
+
+                transceiver.set_property("codec-preferences", &payloader_caps);
+
+                if stream.sink_pad.name().starts_with("video_") {
+                    if settings.do_fec {
+                        transceiver.set_property("fec-type", gst_webrtc::WebRTCFECType::UlpRed);
+                    }
+
+                    transceiver.set_property("do-nack", settings.do_retransmission);
+                }
+
+                pad
+            };
 
             webrtc_pads.insert(
                 ssrc,
                 WebRTCPad {
                     pad,
                     in_caps: stream.in_caps.as_ref().unwrap().clone(),
-                    media_idx: media_idx as u32,
+                    payloader_caps,
+                    media_idx,
                     ssrc,
                     stream_name: Some(stream.sink_pad.name().to_string()),
+                    stream_mid: stream.mid(),
+                    stream_rid: stream.rid(),
                     payload: None,
                 },
             );
@@ -1786,11 +2036,11 @@ impl BaseWebRTCSink {
                         _signaler: glib::Object,
                         session_id: &str,
                         sdp_m_line_index: u32,
-                        _sdp_mid: Option<String>,
+                        sdp_mid: Option<String>,
                         candidate: &str| {
                         instance
                             .imp()
-                            .handle_ice(session_id, Some(sdp_m_line_index), None, candidate);
+                            .handle_ice(session_id, Some(sdp_m_line_index), sdp_mid, candidate);
                     }),
                 ),
 
@@ -2028,24 +2278,49 @@ impl BaseWebRTCSink {
         }
 
         let mut twcc_idx = None;
+        let mut mid_idx = None;
+        let mut rid_idx = None;
 
-        for attribute in media.attributes() {
-            if attribute.key() == "extmap" {
-                if let Some(value) = attribute.value() {
-                    if let Some((idx_str, ext)) = value.split_once(' ') {
-                        if ext == RTP_TWCC_URI {
-                            if let Ok(idx) = idx_str.parse::<u32>() {
-                                twcc_idx = Some(idx);
-                            } else {
-                                gst::warning!(
-                                    CAT,
-                                    obj: element,
-                                    "Failed to parse twcc index: {idx_str}"
-                                );
-                            }
-                        }
-                    }
-                }
+        let rid_value = media.attributes()
+            .filter(|attr| attr.key() == "rid")
+            .find_map(|attr| attr.value());
+        let mid_value = media.attributes()
+            .filter(|attr| attr.key() == "mid")
+            .find_map(|attr| attr.value());
+        let extmaps = media.attributes()
+            .filter(|attr| attr.key() == "extmap")
+            .filter_map(|attr| attr.value())
+            .filter_map(|value| value.split_once(' '));
+        for (idx_str, ext) in extmaps {
+            match ext {
+                RTP_TWCC_URI => if let Ok(idx) = idx_str.parse::<u32>() {
+                    twcc_idx = Some(idx);
+                } else {
+                    gst::warning!(
+                        CAT,
+                        obj: element,
+                        "Failed to parse twcc index: {idx_str}"
+                    );
+                },
+                RTP_MID_URI => if let Ok(idx) = idx_str.parse::<u32>() {
+                    mid_idx = Some(idx);
+                } else {
+                    gst::warning!(
+                        CAT,
+                        obj: element,
+                        "Failed to parse mid index: {idx_str}"
+                    );
+                },
+                RTP_STREAMID_URI => if let Ok(idx) = idx_str.parse::<u32>() {
+                    rid_idx = Some(idx);
+                } else {
+                    gst::warning!(
+                        CAT,
+                        obj: element,
+                        "Failed to parse rid index: {idx_str}"
+                    );
+                },
+                _ => {},
             }
         }
 
@@ -2053,6 +2328,12 @@ impl BaseWebRTCSink {
             .iter()
             .flat_map(|(_, codecs_and_caps)| codecs_and_caps)
             .map(|(codec, caps)| async move {
+                let extensions = EncodingRtpExtensions {
+                    twcc: twcc_idx,
+                    mid: mid_idx.zip(mid_value.map(|s| s.to_string())),
+                    rid: rid_idx.zip(rid_value.map(|s| s.to_string())),
+                };
+
                 BaseWebRTCSink::run_discovery_pipeline(
                     element,
                     stream_name,
@@ -2060,7 +2341,7 @@ impl BaseWebRTCSink {
                     codec.clone(),
                     in_caps.clone(),
                     caps,
-                    twcc_idx,
+                    extensions,
                 )
                 .await
                 .map(|s| {
@@ -2559,9 +2840,10 @@ impl BaseWebRTCSink {
 
                 let mut webrtc_pads: HashMap<u32, WebRTCPad> = HashMap::new();
                 let mut codecs: BTreeMap<i32, Codec> = BTreeMap::new();
+                let mut simulcasts = Simulcasts::default();
 
                 if let Some(ref offer) = offer_clone {
-                    for media in offer.sdp().medias() {
+                    for (i, media) in offer.sdp().medias().enumerate() {
                         let media_is_video = match media.media() {
                             Some("audio") => false,
                             Some("video") => true,
@@ -2589,7 +2871,9 @@ impl BaseWebRTCSink {
                                 Some(media),
                                 &settings_clone,
                                 &mut webrtc_pads,
+                                &simulcasts,
                                 &mut codecs,
+                                idx as u32,
                             )
                             .await;
                         } else {
@@ -2598,11 +2882,50 @@ impl BaseWebRTCSink {
                                 &webrtcbin,
                                 &mut webrtc_pads,
                                 media_is_video,
+                                i as u32,
                             );
                         }
                     }
                 } else {
-                    for mut stream in streams {
+                    let mids: HashSet<String> = streams.iter()
+                        .filter_map(|s| Some(s.mid()?.to_string()))
+                        .collect();
+                    for mid in &mids {
+                        let pad = webrtcbin.request_pad_simple("sink_%u")
+                            .expect("failed to request simulcast pad");
+                        let funnel = make_element(
+                            "rtpfunnel",
+                            Some(&format!("simulcast_{mid}")),
+                        ).expect("failed to create rtpfunnel for {mid}");
+                        let capsfilter = make_element("capsfilter", None)
+                            .expect("failed to create capsfilter for {mid}");
+                        pipeline.add_many([&funnel, &capsfilter])
+                            .expect("failed to add simulcast elements to pipeline for {mid}");
+                        funnel.link(&capsfilter)
+                            .expect("failed to link funnel to capsfilter for {mid}");
+                        capsfilter.link_pads(Some("src"), &webrtcbin, Some(&pad.name()))
+                            .expect("failed to link capsfilter to webrtc for {mid}");
+                        simulcasts.insert(
+                            mid.clone(),
+                            Simulcast {
+                                funnel,
+                                capsfilter,
+                                webrtcbin_pad: pad,
+                            },
+                        );
+                    }
+                    for (_, simulcast) in simulcasts.iter() {
+                        let Simulcast { webrtcbin_pad: pad, .. } = simulcast;
+                        let transceiver = pad.property::<gst_webrtc::WebRTCRTPTransceiver>("transceiver");
+
+                        transceiver.set_property(
+                            "direction",
+                            gst_webrtc::WebRTCRTPTransceiverDirection::Sendonly,
+                        );
+                    }
+                    InputStream::compute_mline_indexes(&mut streams);
+                    for mut stream in &mut streams {
+                        let media_idx = stream.mline_index.unwrap();
                         BaseWebRTCSink::request_webrtcbin_pad(
                             &element,
                             &webrtcbin,
@@ -2610,9 +2933,50 @@ impl BaseWebRTCSink {
                             None,
                             &settings_clone,
                             &mut webrtc_pads,
+                            &simulcasts,
                             &mut codecs,
+                            media_idx,
                         )
                         .await;
+                    }
+                    for (mid, simulcast) in simulcasts.iter() {
+                        let mut simulcast_caps = gst::Caps::builder_full();
+                        let rids = vec!["q", "h", "f"];
+                        let mid_pads = webrtc_pads.values()
+                            .filter(|pad| pad.stream_mid.as_ref() == Some(mid))
+                            .collect::<Vec<_>>();
+                        let rid_pads = rids.into_iter().filter_map(|rid| {
+                            mid_pads.iter()
+                                .find_map(|pad| {
+                                    match pad.rid().as_ref() {
+                                        Some(pad_rid) if pad_rid == rid => Some(pad),
+                                        _ => None,
+                                    }
+                                })
+                        }).collect::<Vec<_>>();
+
+                        let mut simulcast_rids = vec![];
+                        for pad in rid_pads {
+                            let caps = pad.payloader_caps.copy()
+                                .structure(0)
+                                .unwrap()
+                                .to_owned();
+                            simulcast_caps = simulcast_caps.structure(caps);
+                            if let Some(rid) = pad.rid() {
+                                simulcast_rids.push(rid);
+                            }
+                        }
+                        let simulcast_rids = simulcast_rids.join(";");
+                        let simulcast_field = format!("send {simulcast_rids}");
+                        let mut caps = simulcast_caps.build();
+                        let caps_mut = caps.make_mut();
+                        RtpExtensionId::TWCC.add_to_caps(caps_mut);
+                        RtpExtensionId::MID.add_to_caps(caps_mut);
+                        RtpExtensionId::RID.add_to_caps(caps_mut);
+                        caps_mut.set("a-mid", mid);
+                        caps_mut.set("a-simulcast", simulcast_field);
+                        gst::debug!(CAT, "built for mid {mid:?} caps {caps:#?}");
+                        simulcast.set_caps(caps);
                     }
                 }
 
@@ -2625,6 +2989,7 @@ impl BaseWebRTCSink {
                     if let Some(session) = state.sessions.get_mut(&session_id) {
                         let session = session.unwrap_mut();
                         session.webrtc_pads = webrtc_pads;
+                        session.simulcasts = simulcasts;
                         if offer_clone.is_some() {
                             session.codecs = Some(codecs);
                         }
@@ -2811,15 +3176,11 @@ impl BaseWebRTCSink {
             let mut session = session.take();
 
             for webrtc_pad in session.webrtc_pads.clone().values() {
-                let transceiver = webrtc_pad
-                    .pad
-                    .property::<gst_webrtc::WebRTCRTPTransceiver>("transceiver");
-
                 let Some(ref stream_name) = webrtc_pad.stream_name else {
                     continue;
                 };
 
-                if let Some(mid) = transceiver.mid() {
+                if let Some(mid) = webrtc_pad.mid() {
                     state.mids.insert(mid.to_string(), stream_name.clone());
                 }
 
@@ -2973,8 +3334,7 @@ impl BaseWebRTCSink {
                     }
                 }
 
-                if let Some(payload) = sdp
-                    .media(webrtc_pad.media_idx)
+                if let Some(payload) = sdp.media(media_idx)
                     .and_then(|media| media.format(0))
                     .and_then(|format| format.parse::<i32>().ok())
                 {
@@ -3028,7 +3388,7 @@ impl BaseWebRTCSink {
         codec: Codec,
         input_caps: gst::Caps,
         output_caps: &gst::Caps,
-        twcc: Option<u32>,
+        extensions: EncodingRtpExtensions,
     ) -> Result<gst::Structure, Error> {
         let pipe = PipelineWrapper(gst::Pipeline::default());
 
@@ -3068,8 +3428,14 @@ impl BaseWebRTCSink {
                 &[&Option::<String>::None, &stream_name, &codec.caps],
             ),
         );
-        if let Some(twcc) = twcc {
+        if let Some(twcc) = extensions.twcc {
             encoding_chain_builder = encoding_chain_builder.twcc(twcc)
+        }
+        if let Some((id, value)) = extensions.mid {
+            encoding_chain_builder = encoding_chain_builder.mid(id, value)
+        }
+        if let Some((id, value)) = extensions.rid {
+            encoding_chain_builder = encoding_chain_builder.rid(id, value)
         }
         let encoding_chain = encoding_chain_builder.build(&pipe.0, &encoding_chain_src)?;
 
@@ -3225,7 +3591,7 @@ impl BaseWebRTCSink {
                 codec,
                 caps,
                 &output_caps,
-                Some(1),
+                EncodingRtpExtensions::default(),
             )]
         } else {
             let sink_caps = discovery_info.caps.clone();
@@ -3247,7 +3613,7 @@ impl BaseWebRTCSink {
                         codec.clone(),
                         sink_caps.clone(),
                         &output_caps,
-                        Some(1),
+                        EncodingRtpExtensions::default(),
                     )
                 })
                 .collect()
@@ -3984,6 +4350,7 @@ impl ElementImpl for BaseWebRTCSink {
                 is_video,
                 serial,
                 initial_discovery_started: false,
+                mline_index: None,
             },
         );
 
