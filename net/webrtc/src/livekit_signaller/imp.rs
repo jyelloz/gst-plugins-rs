@@ -202,14 +202,53 @@ impl Signaller {
             .any(|id| id == peer_id)
     }
 
+    fn signal_client(&self) -> Option<Arc<signal_client::SignalClient>> {
+        let connection = self.connection.lock().unwrap();
+        Some(connection.as_ref()?.signal_client.clone())
+    }
+
     fn require_signal_client(&self) -> Arc<signal_client::SignalClient> {
-        self.connection
+        self.signal_client().unwrap()
+    }
+
+    async fn send_trickle_request(&self, candidate_init: &str) {
+        let Some(signal_client) = self.signal_client() else {
+            return;
+        };
+        for target in [
+            proto::SignalTarget::Publisher,
+            proto::SignalTarget::Subscriber,
+        ] {
+            signal_client
+                .send(proto::signal_request::Message::Trickle(
+                    proto::TrickleRequest {
+                        candidate_init: candidate_init.to_string(),
+                        target: target as i32,
+                    },
+                ))
+                .await;
+        }
+    }
+
+    async fn drain_delayed_ice_candidates(&self) {
+        let Some(mut early_candidates) = self
+            .connection
             .lock()
             .unwrap()
-            .as_ref()
-            .unwrap()
-            .signal_client
-            .clone()
+            .as_mut()
+            .and_then(|c| c.early_candidates.take())
+        else {
+            return;
+        };
+
+        while let Some(candidate_str) = early_candidates.pop() {
+            gst::debug!(
+                CAT,
+                imp: self,
+                "Sending delayed ice candidate {candidate_str:?}"
+            );
+            self.send_trickle_request(&candidate_str).await;
+        }
     }
 
     async fn signal_task(&self, mut signal_events: signal_client::SignalEvents) {
@@ -342,6 +381,7 @@ impl Signaller {
                         },
                     ))
                     .await;
+                imp.drain_delayed_ice_candidates().await;
             }
         });
     }
@@ -500,30 +540,7 @@ impl Signaller {
                     .await;
 
                 if let Some(imp) = weak_imp.upgrade() {
-                    let early_candidates =
-                        if let Some(connection) = &mut *imp.connection.lock().unwrap() {
-                            connection.early_candidates.take()
-                        } else {
-                            None
-                        };
-
-                    if let Some(mut early_candidates) = early_candidates {
-                        while let Some(candidate_str) = early_candidates.pop() {
-                            gst::debug!(
-                                CAT,
-                                imp: imp,
-                                "Sending delayed ice candidate {candidate_str:?}"
-                            );
-                            signal_client
-                                .send(proto::signal_request::Message::Trickle(
-                                    proto::TrickleRequest {
-                                        candidate_init: candidate_str,
-                                        target: proto::SignalTarget::Publisher as i32,
-                                    },
-                                ))
-                                .await;
-                        }
-                    }
+                    imp.drain_delayed_ice_candidates().await;
                 }
             }
         });
@@ -809,20 +826,7 @@ impl SignallableImpl for Signaller {
         let imp = self.downgrade();
         RUNTIME.spawn(async move {
             if let Some(imp) = imp.upgrade() {
-                let signal_client = if let Some(connection) = &mut *imp.connection.lock().unwrap() {
-                    connection.signal_client.clone()
-                } else {
-                    return;
-                };
-
-                signal_client
-                    .send(proto::signal_request::Message::Trickle(
-                        proto::TrickleRequest {
-                            candidate_init: candidate_str,
-                            target: proto::SignalTarget::Publisher as i32,
-                        },
-                    ))
-                    .await;
+                imp.send_trickle_request(&candidate_str).await;
             };
         });
     }
