@@ -341,7 +341,7 @@ impl CongestionController {
             control_op
         );
 
-        let n_encoders = encoders.len() as i32;
+        let n_encoders = i32::max(1, encoders.len() as i32);
         let prev_bitrate = i32::min(self.target_bitrate_on_delay, self.target_bitrate_on_loss);
         match &control_op {
             CongestionControlOp::Hold => {}
