@@ -557,6 +557,10 @@ impl Codec {
         })
     }
 
+    pub fn is_audio(&self) -> bool {
+        matches!(self.stream_type, gst::StreamType::AUDIO)
+    }
+
     pub fn is_video(&self) -> bool {
         matches!(self.stream_type, gst::StreamType::VIDEO)
     }
