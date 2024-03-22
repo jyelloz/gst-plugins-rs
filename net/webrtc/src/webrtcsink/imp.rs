@@ -83,10 +83,10 @@ enum RtpExtensionId {
 }
 
 impl RtpExtensionId {
-    pub fn id(self) -> u32 {
+    pub const fn id(self) -> u32 {
         self as u32
     }
-    pub fn uri(&self) -> &'static str {
+    pub const fn uri(&self) -> &'static str {
         match self {
             Self::TWCC => RTP_TWCC_URI,
             Self::MID => RTP_MID_URI,
