@@ -48,6 +48,7 @@ const D3D11_MEMORY_FEATURE: &str = "memory:D3D11Memory";
 
 const RTP_TWCC_URI: &str =
     "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01";
+const RTP_AUDIOLEVEL_URI: &str = "urn:ietf:params:rtp-hdrext:ssrc-audio-level";
 const RTP_MID_URI: &str = "urn:ietf:params:rtp-hdrext:sdes:mid";
 const RTP_STREAMID_URI: &str = "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id";
 
@@ -78,6 +79,7 @@ const DO_FEC_THRESHOLD: u32 = 2000000;
 /// Internally-unique numerical ID for each RTP extension
 enum RtpExtensionId {
     TWCC = 1,
+    AUDIOLEVEL,
     MID,
     RID,
 }
@@ -89,6 +91,7 @@ impl RtpExtensionId {
     pub const fn uri(&self) -> &'static str {
         match self {
             Self::TWCC => RTP_TWCC_URI,
+            Self::AUDIOLEVEL => RTP_AUDIOLEVEL_URI,
             Self::MID => RTP_MID_URI,
             Self::RID => RTP_STREAMID_URI,
         }
@@ -899,6 +902,8 @@ fn configure_encoder(enc: &gst::Element, start_bitrate: u32) {
 struct EncodingRtpExtensions {
     /// The TWCC ID to use for payloaded stream
     twcc: Option<u32>,
+    /// The Audio Level extension ID of payloaded stream
+    audio_level: Option<u32>,
     /// The Media Identification extension ID and value of payloaded stream
     mid: Option<(u32, String)>,
     /// The RtpStreamId extension ID and value of payloaded stream
@@ -909,6 +914,7 @@ impl Default for EncodingRtpExtensions {
     fn default() -> Self {
         Self {
             twcc: Some(RtpExtensionId::TWCC.id()),
+            audio_level: Some(RtpExtensionId::AUDIOLEVEL.id()),
             mid: None,
             rid: None,
         }
@@ -960,6 +966,11 @@ impl EncodingChainBuilder {
 
     fn twcc(mut self, twcc: u32) -> Self {
         self.extensions.twcc = Some(twcc);
+        self
+    }
+
+    fn audio_level(mut self, id: u32) -> Self {
+        self.extensions.audio_level = Some(id);
         self
     }
 
@@ -1056,6 +1067,14 @@ impl EncodingChainBuilder {
                 pay.emit_by_name::<()>("add-extension", &[&twcc_extension]);
             } else {
                 anyhow::bail!("Failed to add TWCC extension, make sure 'gst-plugins-good:rtpmanager' is installed");
+            }
+        }
+        if let Some(idx) = self.extensions.audio_level {
+            if let Some(ext) = gst_rtp::RTPHeaderExtension::create_from_uri(RTP_AUDIOLEVEL_URI) {
+                ext.set_id(idx);
+                pay.emit_by_name::<()>("add-extension", &[&ext]);
+            } else {
+                anyhow::bail!("Failed to add audio level extension, make sure 'gst-plugins-good:rtpmanager' is installed");
             }
         }
         if let Some((idx, value)) = self.extensions.mid {
@@ -1442,6 +1461,9 @@ impl Session {
             ),
         )
         .ssrc(webrtc_pad.ssrc);
+        if codec.is_audio() {
+            encoding_chain = encoding_chain.audio_level(RtpExtensionId::AUDIOLEVEL.id());
+        }
         if let Some(mid) = webrtc_pad.mid() {
             encoding_chain = encoding_chain.mid(
                 RtpExtensionId::MID.id(),
@@ -1489,7 +1511,7 @@ impl Session {
         let mut filtered_s = gst::Structure::new_empty("application/x-rtp");
 
         filtered_s.extend(s.iter().filter_map(|(key, value)| {
-            if key.starts_with("a-") || key.starts_with("rid-") {
+            if key.starts_with("a-") || key.starts_with("rid-") || key.starts_with("extmap-") {
                 None
             } else {
                 Some((key, value.to_owned()))
@@ -2280,6 +2302,7 @@ impl BaseWebRTCSink {
         let mut twcc_idx = None;
         let mut mid_idx = None;
         let mut rid_idx = None;
+        let mut audio_level_idx = None;
 
         let rid_value = media.attributes()
             .filter(|attr| attr.key() == "rid")
@@ -2320,6 +2343,15 @@ impl BaseWebRTCSink {
                         "Failed to parse rid index: {idx_str}"
                     );
                 },
+                RTP_AUDIOLEVEL_URI => if let Ok(idx) = idx_str.parse::<u32>() {
+                    audio_level_idx = Some(idx);
+                } else {
+                    gst::warning!(
+                        CAT,
+                        obj: element,
+                        "Failed to parse audio level index: {idx_str}",
+                    );
+                },
                 _ => {},
             }
         }
@@ -2330,6 +2362,7 @@ impl BaseWebRTCSink {
             .map(|(codec, caps)| async move {
                 let extensions = EncodingRtpExtensions {
                     twcc: twcc_idx,
+                    audio_level: audio_level_idx,
                     mid: mid_idx.zip(mid_value.map(|s| s.to_string())),
                     rid: rid_idx.zip(rid_value.map(|s| s.to_string())),
                 };
@@ -3430,6 +3463,9 @@ impl BaseWebRTCSink {
         );
         if let Some(twcc) = extensions.twcc {
             encoding_chain_builder = encoding_chain_builder.twcc(twcc)
+        }
+        if let Some(id) = extensions.audio_level {
+            encoding_chain_builder = encoding_chain_builder.audio_level(id)
         }
         if let Some((id, value)) = extensions.mid {
             encoding_chain_builder = encoding_chain_builder.mid(id, value)
