@@ -104,7 +104,7 @@ impl Restrictions {
         let mut parts = restriction.split_whitespace();
         let rid = parts.next()?;
         let _direction = parts.next()?;
-        let restrictions = parts.next()?.split(";").collect::<Vec<_>>();
+        let restrictions = parts.next()?.split(';').collect::<Vec<_>>();
         Some(Self::from((rid.to_string(), restrictions.as_slice())))
     }
     /// Converts into a LiveKit video layer. Only RID values "q", "h", and "f"
@@ -137,13 +137,11 @@ impl From<(String, &[&str])> for Restrictions {
         let (rid, value) = value;
         let max_width = value
             .iter()
-            .filter(|s| s.starts_with("max-width="))
-            .map(|s| s.trim_start_matches("max-width="))
+            .filter_map(|s| s.strip_prefix("max-width="))
             .find_map(|s| s.parse().ok());
         let max_height = value
             .iter()
-            .filter(|s| s.starts_with("max-height="))
-            .map(|s| s.trim_start_matches("max-height="))
+            .filter_map(|s| s.strip_prefix("max-height="))
             .find_map(|s| s.parse().ok());
         Self {
             rid,
@@ -182,20 +180,31 @@ impl Signaller {
     }
 
     fn auto_subscribe(&self) -> bool {
-        self.is_subscriber() && self.producer_peer_id().is_none() &&
-            self.excluded_producer_peer_ids_is_empty()
+        self.is_subscriber()
+            && self.producer_peer_id().is_none()
+            && self.excluded_producer_peer_ids_is_empty()
+    }
+
+    fn signal_target(&self) -> Option<proto::SignalTarget> {
+        match self.role()? {
+            WebRTCSignallerRole::Consumer => Some(proto::SignalTarget::Subscriber),
+            WebRTCSignallerRole::Producer => Some(proto::SignalTarget::Publisher),
+            _ => None,
+        }
     }
 
     fn excluded_producer_peer_ids_is_empty(&self) -> bool {
         assert!(self.is_subscriber());
-        self.settings.lock()
+        self.settings
+            .lock()
             .unwrap()
             .excluded_produder_peer_ids
             .is_empty()
     }
 
     fn is_peer_excluded(&self, peer_id: &str) -> bool {
-        self.settings.lock()
+        self.settings
+            .lock()
             .unwrap()
             .excluded_produder_peer_ids
             .iter()
@@ -215,22 +224,20 @@ impl Signaller {
         let Some(signal_client) = self.signal_client() else {
             return;
         };
-        for target in [
-            proto::SignalTarget::Publisher,
-            proto::SignalTarget::Subscriber,
-        ] {
-            signal_client
-                .send(proto::signal_request::Message::Trickle(
-                    proto::TrickleRequest {
-                        candidate_init: candidate_init.to_string(),
-                        target: target as i32,
-                    },
-                ))
-                .await;
-        }
+        let Some(target) = self.signal_target() else {
+            return;
+        };
+        signal_client
+            .send(proto::signal_request::Message::Trickle(
+                proto::TrickleRequest {
+                    candidate_init: candidate_init.to_string(),
+                    target: target as i32,
+                },
+            ))
+            .await;
     }
 
-    async fn drain_delayed_ice_candidates(&self) {
+    async fn send_delayed_ice_candidates(&self) {
         let Some(mut early_candidates) = self
             .connection
             .lock()
@@ -297,7 +304,7 @@ impl Signaller {
 
             proto::signal_response::Message::Offer(offer) => {
                 if !self.is_subscriber() {
-                    gst::log!(CAT, imp: self, "Ignoring subscriber offer in non-subscriber mode: {:?}", offer);
+                    gst::warning!(CAT, imp: self, "Ignoring subscriber offer in non-subscriber mode: {:?}", offer);
                     return;
                 }
                 gst::debug!(CAT, imp: self, "Received subscriber offer: {:?}", offer);
@@ -319,7 +326,11 @@ impl Signaller {
             proto::signal_response::Message::Trickle(trickle) => {
                 gst::debug!(CAT, imp: self, "Received ice_candidate {:?}", trickle);
 
-                if trickle.target() == proto::SignalTarget::Publisher {
+                let Some(target) = self.signal_target() else {
+                    return;
+                };
+
+                if target == trickle.target() {
                     if let Ok(json) =
                         serde_json::from_str::<IceCandidateJson>(&trickle.candidate_init)
                     {
@@ -347,7 +358,7 @@ impl Signaller {
 
             proto::signal_response::Message::Update(update) => {
                 if !self.is_subscriber() {
-                    gst::log!(CAT, imp: self, "Ignoring update in non-subscriber mode: {:?}", update);
+                    gst::trace!(CAT, imp: self, "Ignoring update in non-subscriber mode: {:?}", update);
                     return;
                 }
                 gst::debug!(CAT, imp: self, "Update: {:?}", update);
@@ -381,45 +392,9 @@ impl Signaller {
                         },
                     ))
                     .await;
-                imp.drain_delayed_ice_candidates().await;
+                imp.send_delayed_ice_candidates().await;
             }
         });
-    }
-
-    fn build_simulcast_layers(
-        track_type: proto::TrackType,
-        media: &gst_sdp::SDPMediaRef,
-    ) -> Vec<proto::VideoLayer> {
-        if track_type != proto::TrackType::Video {
-            return vec![];
-        }
-        let restrictions = media
-            .attributes()
-            .filter(|attr| attr.key() == "rid")
-            .filter_map(|attr| attr.value())
-            .filter_map(Restrictions::parse)
-            .map(|restrictions| (restrictions.rid.clone(), restrictions))
-            .collect::<HashMap<String, Restrictions>>();
-
-        gst::debug!(CAT, "parsed SDP RID restrictions {restrictions:?}");
-
-        let layers = media
-            .attribute_val("simulcast")
-            .into_iter()
-            .filter_map(|simulcast| simulcast.split_whitespace().skip(1).next())
-            .flat_map(|simulcast| simulcast.split(";"))
-            .filter_map(|rid| restrictions.get(rid))
-            .filter_map(Restrictions::create_video_layer)
-            .collect::<Vec<_>>();
-
-        if layers.is_empty() {
-            vec![proto::VideoLayer {
-                quality: proto::VideoQuality::High as i32,
-                ..Default::default()
-            }]
-        } else {
-            layers
-        }
     }
 
     fn send_sdp_offer(&self, _session_id: &str, sessdesc: &gst_webrtc::WebRTCSessionDescription) {
@@ -540,7 +515,7 @@ impl Signaller {
                     .await;
 
                 if let Some(imp) = weak_imp.upgrade() {
-                    imp.drain_delayed_ice_candidates().await;
+                    imp.send_delayed_ice_candidates().await;
                 }
             }
         });
@@ -556,17 +531,17 @@ impl Signaller {
         match self.producer_peer_id() {
             Some(id) if id == *peer_sid => {
                 gst::debug!(CAT, imp: self, "matching peer sid {id:?}");
-            },
+            }
             Some(id) if id == *peer_identity => {
                 gst::debug!(CAT, imp: self, "matching peer identity {id:?}");
-            },
+            }
             None => {
                 if self.is_peer_excluded(peer_sid) || self.is_peer_excluded(peer_identity) {
                     gst::debug!(CAT, imp: self, "ignoring excluded peer {participant:?}");
                     return;
                 }
                 gst::debug!(CAT, imp: self, "catch-all mode, matching {participant:?}");
-            },
+            }
             _ => return,
         }
         let meta = Some(&participant.metadata)
@@ -574,7 +549,9 @@ impl Signaller {
             .and_then(|meta| gst::Structure::from_str(meta).ok());
         match participant.state {
             x if x == proto::participant_info::State::Active as i32 => {
-                let track_sids = participant.tracks.iter()
+                let track_sids = participant
+                    .tracks
+                    .iter()
                     .filter(|t| !t.muted)
                     .map(|t| t.sid.clone())
                     .collect::<Vec<_>>();
@@ -596,16 +573,50 @@ impl Signaller {
                     };
                     let signal_client = imp.require_signal_client();
                     signal_client.send(update).await;
-                    imp.obj().emit_by_name::<()>(
-                        "producer-added",
-                        &[&peer_sid, &meta],
-                    );
+                    imp.obj()
+                        .emit_by_name::<()>("producer-added", &[&peer_sid, &meta]);
                 });
             }
             _ => {
                 self.obj()
                     .emit_by_name::<()>("producer-removed", &[&peer_sid, &meta]);
             }
+        }
+    }
+
+    fn build_simulcast_layers(
+        track_type: proto::TrackType,
+        media: &gst_sdp::SDPMediaRef,
+    ) -> Vec<proto::VideoLayer> {
+        if track_type != proto::TrackType::Video {
+            return vec![];
+        }
+        let restrictions = media
+            .attributes()
+            .filter(|attr| attr.key() == "rid")
+            .filter_map(|attr| attr.value())
+            .filter_map(Restrictions::parse)
+            .map(|restrictions| (restrictions.rid.clone(), restrictions))
+            .collect::<HashMap<String, Restrictions>>();
+
+        gst::debug!(CAT, "parsed SDP RID restrictions {restrictions:?}");
+
+        let layers = media
+            .attribute_val("simulcast")
+            .into_iter()
+            .filter_map(|simulcast| simulcast.split_whitespace().nth(1))
+            .flat_map(|simulcast| simulcast.split(';'))
+            .filter_map(|rid| restrictions.get(rid))
+            .filter_map(Restrictions::create_video_layer)
+            .collect::<Vec<_>>();
+
+        if layers.is_empty() {
+            vec![proto::VideoLayer {
+                quality: proto::VideoQuality::High as i32,
+                ..Default::default()
+            }]
+        } else {
+            layers
         }
     }
 
@@ -719,10 +730,8 @@ impl SignallableImpl for Signaller {
             });
 
             if imp.is_subscriber() {
-                imp.obj().emit_by_name::<()>(
-                    "session-started",
-                    &[&"unique", &"unique"]
-                );
+                imp.obj()
+                    .emit_by_name::<()>("session-started", &[&"unique", &"unique"]);
                 for participant in &join_response.other_participants {
                     imp.on_participant(participant, false)
                 }
@@ -797,15 +806,14 @@ impl SignallableImpl for Signaller {
         match sessdesc.type_() {
             gst_webrtc::WebRTCSDPType::Offer => {
                 self.send_sdp_offer(session_id, sessdesc);
-            },
+            }
             gst_webrtc::WebRTCSDPType::Answer => {
                 self.send_sdp_answer(session_id, sessdesc);
-            },
+            }
             _ => {
                 gst::debug!(CAT, imp: self, "Ignoring SDP {:?}", sessdesc.sdp());
             }
         }
-
     }
 
     fn add_ice(
@@ -973,12 +981,8 @@ impl ObjectImpl for Signaller {
             "timeout" => {
                 settings.timeout = value.get().unwrap();
             }
-            "role" => {
-                settings.role = value.get().unwrap()
-            }
-            "producer-peer-id" => {
-                settings.producer_peer_id = value.get().unwrap()
-            }
+            "role" => settings.role = value.get().unwrap(),
+            "producer-peer-id" => settings.producer_peer_id = value.get().unwrap(),
             "excluded-producer-peer-ids" => {
                 settings.excluded_produder_peer_ids = value
                     .get::<gst::ArrayRef>()
@@ -1022,6 +1026,9 @@ impl ObjectImpl for Signaller {
             }
             "role" => settings.role.to_value(),
             "producer-peer-id" => settings.producer_peer_id.to_value(),
+            "excluded-producer-peer-ids" => {
+                gst::Array::new(&settings.excluded_produder_peer_ids).to_value()
+            }
             _ => unimplemented!(),
         }
     }
