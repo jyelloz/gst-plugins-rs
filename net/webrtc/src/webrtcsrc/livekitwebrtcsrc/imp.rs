@@ -183,7 +183,7 @@ impl ObjectImpl for LiveKitWebRTCSrc {
         static SIGNALS: Lazy<Vec<glib::subclass::Signal>> = Lazy::new(|| {
             vec![
                 /**
-                 * BaseWebRTCSrc::request-encoded-filter:
+                 * LiveKitWebRTCSrc::request-encoded-filter:
                  * @producer_id: Identifier of the producer
                  * @pad_name: The name of the output pad
                  * @allowed_caps: the allowed caps for the output pad
@@ -204,6 +204,17 @@ impl ObjectImpl for LiveKitWebRTCSrc {
                         Option::<gst::Caps>::static_type(),
                     ])
                     .return_type::<gst::Element>()
+                    .build(),
+                /**
+                 * LiveKitWebRTCSrc::consumer-added:
+                 * @consumer_id: Identifier of the consumer added
+                 * @webrtcbin: The new webrtcbin
+                 *
+                 * This signal can be used to tweak @webrtcbin, creating a data
+                 * channel for example.
+                 */
+                glib::subclass::Signal::builder("consumer-added")
+                    .param_types([String::static_type(), gst::Element::static_type()])
                     .build(),
             ]
         });
@@ -508,8 +519,14 @@ impl LiveKitWebRTCSrc {
             );
             bin.add(webrtcbin).unwrap();
         }
+        self.obj()
+            .emit_by_name::<()>("consumer-added", &[&"none", &publisher_pc]);
         self.signaller()
             .emit_by_name::<()>("consumer-added", &[&"none", &publisher_pc]);
+        self.obj()
+            .emit_by_name::<()>("consumer-added", &[&"none", &subscriber_pc]);
+        self.signaller()
+            .emit_by_name::<()>("consumer-added", &[&"none", &subscriber_pc]);
 
         self.obj().add(&bin).context("Could not add `bin`")?;
 
