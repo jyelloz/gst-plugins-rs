@@ -199,7 +199,7 @@ impl ObjectImpl for LiveKitWebRTCSrc {
                  */
                 glib::subclass::Signal::builder("request-encoded-filter")
                     .param_types([
-                        String::static_type(),
+                        Option::<String>::static_type(),
                         String::static_type(),
                         Option::<gst::Caps>::static_type(),
                     ])
