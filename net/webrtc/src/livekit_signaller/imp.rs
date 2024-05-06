@@ -69,6 +69,7 @@ impl Default for Settings {
 pub struct Signaller {
     settings: Mutex<Settings>,
     connection: Mutex<Option<Connection>>,
+    connection_qualities: Mutex<ConnectionQualities>,
     join_canceller: Mutex<Option<futures::future::AbortHandle>>,
     signal_task_canceller: Mutex<Option<futures::future::AbortHandle>>,
 }
@@ -157,6 +158,45 @@ struct IceCandidateJson {
     pub sdp_mid: String,
     pub sdp_m_line_index: i32,
     pub candidate: String,
+}
+
+#[derive(Debug)]
+struct ConnectionQuality(proto::ConnectionQualityInfo);
+
+impl From<&ConnectionQuality> for gst::Structure {
+    fn from(value: &ConnectionQuality) -> Self {
+        let ConnectionQuality(quality) = value;
+        gst::Structure::builder("application/x-gst-livekit-connection-quality")
+            .field("sid", &quality.participant_sid)
+            .field("quality", quality.quality().as_str_name())
+            .field("score", quality.score)
+            .build()
+    }
+}
+
+#[derive(Default, Debug)]
+struct ConnectionQualities(HashMap<String, ConnectionQuality>);
+
+impl ConnectionQualities {
+    pub fn update(&mut self, update: &proto::ConnectionQualityUpdate) {
+        let Self(map) = self;
+        for quality in update.updates.to_owned() {
+            let id = quality.participant_sid.clone();
+            let quality = ConnectionQuality(quality);
+            map.insert(id, quality);
+        }
+    }
+}
+
+impl From<&ConnectionQualities> for gst::Structure {
+    fn from(value: &ConnectionQualities) -> Self {
+        let ConnectionQualities(qualities) = value;
+        let mut structure = gst::Structure::builder("application/x-gst-livekit-connection-qualities");
+        for (id, quality) in qualities {
+            structure = structure.field(id, gst::Structure::from(quality));
+        }
+        structure.build()
+    }
 }
 
 impl Signaller {
@@ -345,6 +385,15 @@ impl Signaller {
 
             proto::signal_response::Message::ConnectionQuality(quality) => {
                 gst::debug!(CAT, imp: self, "Connection quality: {:?}", quality);
+                let mut qualities = self.connection_qualities.lock().unwrap();
+                qualities.update(&quality);
+                let obj = self.obj().downgrade();
+                RUNTIME.spawn(async move {
+                    let Some(obj) = obj.upgrade() else {
+                        return;
+                    };
+                    obj.notify("connection-qualities");
+                });
             }
 
             proto::signal_response::Message::TrackPublished(publish_res) => {
@@ -948,6 +997,10 @@ impl ObjectImpl for Signaller {
                     .flags(glib::ParamFlags::READWRITE)
                     .element_spec(&glib::ParamSpecString::builder("producer-peer-id").build())
                     .build(),
+                glib::ParamSpecBoxed::builder::<gst::Structure>("connection-qualities")
+                    .nick("Connection Qualities")
+                    .blurb("GstStructure of connection quality keyed by participant ID")
+                    .build(),
             ]
         });
 
@@ -1028,6 +1081,10 @@ impl ObjectImpl for Signaller {
             "producer-peer-id" => settings.producer_peer_id.to_value(),
             "excluded-producer-peer-ids" => {
                 gst::Array::new(&settings.excluded_produder_peer_ids).to_value()
+            }
+            "connection-qualities" => {
+                let participants = self.connection_qualities.lock().unwrap();
+                gst::Structure::from(&*participants).to_value()
             }
             _ => unimplemented!(),
         }
