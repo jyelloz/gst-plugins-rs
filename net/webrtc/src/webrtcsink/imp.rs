@@ -1678,19 +1678,24 @@ impl InputStream {
     fn compute_mline_indexes(streams: &mut [Self]) {
         let mut mlines_by_mid = HashMap::new();
         let mut index = 0;
-        for stream in streams {
-            if let Some(mid) = stream.mid() {
-                let entry = mlines_by_mid.entry(mid.clone())
-                    .or_insert_with(|| {
-                        let current_index = index;
-                        index += 1;
-                        current_index
-                    });
-                stream.mline_index = Some(*entry);
-            } else {
-                stream.mline_index = Some(index);
-                index += 1;
+        for stream in streams.as_mut() {
+            let Some(mid) = stream.mid() else {
+                continue;
+            };
+            let entry = mlines_by_mid.entry(mid.clone())
+                .or_insert_with(|| {
+                    let current_index = index;
+                    index += 1;
+                    current_index
+                });
+            stream.mline_index = Some(*entry);
+        }
+        for stream in streams.as_mut() {
+            if stream.mline_index.is_some() {
+                continue;
             }
+            stream.mline_index = Some(index);
+            index += 1;
         }
     }
 }
