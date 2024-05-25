@@ -1,0 +1,238 @@
+// Copyright (C) 2024 Jordan Yelloz <jordan@yelloz.me>
+// SPDX-License-Identifier: MPL-2.0
+
+use std::sync::{LazyLock, Mutex};
+
+use gst::{
+    glib::{self, bool_error},
+    prelude::*,
+    subclass::prelude::*,
+};
+use gst_pbutils::{
+    AudioVisualizer,
+    audio_visualizer::AudioVisualizerExtManual as _,
+    subclass::{AudioVisualizerSetupToken, prelude::*},
+};
+use gst_video::{VideoFormat, VideoFrameExt as _, VideoFrameRef};
+
+use crate::spectrum::{WINDOW_SIZE, analyze_sample, empty_sample};
+
+type BoolResult<T> = Result<T, glib::BoolError>;
+
+struct Scratchpad {
+    data: Box<[u8]>,
+    current_column: usize,
+    width: usize,
+    height: usize,
+}
+
+impl Scratchpad {
+    fn new(width: usize, height: usize, buffer_size: usize) -> Self {
+        let data = vec![0u8; buffer_size];
+        Self {
+            data: data.into_boxed_slice(),
+            current_column: 0,
+            width,
+            height,
+        }
+    }
+    fn next(&mut self) {
+        self.current_column += 1;
+        if self.current_column >= self.width {
+            self.current_column = 0;
+        }
+    }
+    fn copy_into(&self, frame: &mut VideoFrameRef<&mut gst::BufferRef>) -> BoolResult<()> {
+        let stride = frame.comp_stride(0) as usize;
+        let pstride = frame.comp_pstride(0) as usize;
+        let outbuf = frame.comp_data_mut(0)?;
+        let pivot = (self.current_column + 1) * pstride;
+        let left_size = (self.width - pivot) * pstride;
+        for row in 0..self.height {
+            let row_offset = row * stride;
+            let in_row = &self.data[row_offset + pivot..];
+            let in_row = &in_row[..left_size];
+            let out_row = &mut outbuf[row_offset..];
+            let out_row = &mut out_row[..left_size];
+            out_row.copy_from_slice(in_row);
+        }
+        for row in 0..self.height {
+            let row_offset = row * stride;
+            let in_row = &self.data[row_offset..];
+            let in_row = &in_row[..pivot];
+            let out_row = &mut outbuf[row_offset + left_size..];
+            let out_row = &mut out_row[..pivot];
+            out_row.copy_from_slice(in_row);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct AudioSpectrogram {
+    scratchpad: Mutex<Option<Scratchpad>>,
+}
+
+impl AudioSpectrogram {
+    fn sinkpad(&self) -> Option<gst::Pad> {
+        self.obj().static_pad("sink")
+    }
+    fn audio_caps(&self) -> Option<gst::Caps> {
+        self.sinkpad()?.current_caps()
+    }
+    fn audio_info(&self) -> Option<gst_audio::AudioInfo> {
+        let caps = self.audio_caps()?;
+        gst_audio::AudioInfo::from_caps(&caps).ok()
+    }
+    fn require_audio_info(&self) -> BoolResult<gst_audio::AudioInfo> {
+        self.audio_info()
+            .ok_or(bool_error!("audio info/caps not yet available"))
+    }
+    fn srcpad(&self) -> Option<gst::Pad> {
+        self.obj().static_pad("src")
+    }
+    fn video_caps(&self) -> Option<gst::Caps> {
+        self.srcpad()?.current_caps()
+    }
+    fn video_info(&self) -> Option<gst_video::VideoInfo> {
+        let caps = self.video_caps()?;
+        gst_video::VideoInfo::from_caps(&caps).ok()
+    }
+
+    #[inline]
+    const fn row_to_bin(row: u32, size: u32, height: u32) -> usize {
+        let max_bin = size - 1;
+        (max_bin - (row * max_bin / height)) as usize
+    }
+
+    fn draw_column(
+        &self,
+        sample: &[f32],
+        stride: u32,
+        pstride: u32,
+        height: u32,
+        column: u32,
+        plane: &mut [u8],
+    ) {
+        let size = sample.len() as u32;
+        let column_offset = (column * pstride) as usize;
+        for row in 0..height {
+            let bin = Self::row_to_bin(row, size, height);
+            let color = sample[bin];
+            let row_offset = (row * stride) as usize;
+            let pixel = &mut plane[row_offset + column_offset..];
+            pixel[0] = color as u8;
+        }
+    }
+
+    fn visualize(
+        &self,
+        sample: &[f32],
+        video_frame: &mut VideoFrameRef<&mut gst::BufferRef>,
+    ) -> BoolResult<()> {
+        let mut scratch_lock = self.scratchpad.lock().unwrap();
+        let scratch = scratch_lock
+            .as_mut()
+            .ok_or(bool_error!("scratchpad not yet available"))?;
+        let column = scratch.current_column as u32;
+        let data = &mut scratch.data;
+        self.draw_column(
+            sample,
+            video_frame.comp_stride(0) as u32,
+            video_frame.comp_pstride(0) as u32,
+            video_frame.height(),
+            column,
+            data,
+        );
+        scratch.copy_into(video_frame)?;
+        scratch.next();
+        Ok(())
+    }
+}
+
+#[glib::object_subclass]
+impl ObjectSubclass for AudioSpectrogram {
+    const NAME: &'static str = "GstAudioSpectrogram";
+    type Type = super::AudioSpectrogram;
+    type ParentType = AudioVisualizer;
+}
+
+impl ObjectImpl for AudioSpectrogram {}
+impl GstObjectImpl for AudioSpectrogram {}
+
+impl ElementImpl for AudioSpectrogram {
+    fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
+            gst::subclass::ElementMetadata::new(
+                super::DESCRIPTION,
+                "Visualization",
+                "Renders a side-scrolling spectrogram of an audio stream",
+                "Jordan Yelloz <jordan@yelloz.me>",
+            )
+        });
+
+        Some(&*ELEMENT_METADATA)
+    }
+
+    fn pad_templates() -> &'static [gst::PadTemplate] {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
+            let sink_caps = gst_audio::AudioCapsBuilder::new()
+                .format(gst_audio::AudioFormat::F32le)
+                .channels(1)
+                .build();
+            let src_caps = gst_video::VideoCapsBuilder::new()
+                .format(VideoFormat::Gray8)
+                .build();
+
+            let sink_pad_template = gst::PadTemplate::new(
+                "sink",
+                gst::PadDirection::Sink,
+                gst::PadPresence::Always,
+                &sink_caps,
+            )
+            .unwrap();
+
+            let src_pad_template = gst::PadTemplate::new(
+                "src",
+                gst::PadDirection::Src,
+                gst::PadPresence::Always,
+                &src_caps,
+            )
+            .unwrap();
+
+            vec![sink_pad_template, src_pad_template]
+        });
+
+        PAD_TEMPLATES.as_ref()
+    }
+}
+
+impl AudioVisualizerImpl for AudioSpectrogram {
+    fn render(
+        &self,
+        audio_buffer: &gst::BufferRef,
+        video_frame: &mut VideoFrameRef<&mut gst::BufferRef>,
+    ) -> Result<(), gst::LoggableError> {
+        let info = self.require_audio_info()?;
+        let sample = {
+            let map = audio_buffer.map_readable()?;
+            analyze_sample(map.as_slice(), &info)?.unwrap_or_else(empty_sample)
+        };
+        self.visualize(&sample, video_frame)?;
+        Ok(())
+    }
+    fn setup(&self, token: &AudioVisualizerSetupToken) -> Result<(), gst::LoggableError> {
+        self.parent_setup(token)?;
+        self.obj().set_req_spf(WINDOW_SIZE as u32, token);
+        let Some(video_info) = self.video_info() else {
+            return Ok(());
+        };
+        let scratch = Scratchpad::new(
+            video_info.width() as usize,
+            video_info.height() as usize,
+            video_info.size(),
+        );
+        self.scratchpad.lock().unwrap().replace(scratch);
+        Ok(())
+    }
+}

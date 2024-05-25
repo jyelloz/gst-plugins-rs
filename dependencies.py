@@ -29,6 +29,7 @@ RENAMES = {
     'rsanalytics': 'analytics',
     'rsaudiofx': 'audiofx',
     'rsaudioparsers': 'audioparsers',
+    'rsaudiovisualizers': 'audiovisualizers',
     'rsfile': 'file',
     'rsflv': 'flavors',
     'rsrtp': 'rtp',

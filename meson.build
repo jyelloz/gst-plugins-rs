@@ -72,6 +72,7 @@ plugins = {
   'audioparsers': {
     'library': 'libgstrsaudioparsers',
   },
+  'audiovisualizers': {'library': 'libgstrsaudiovisualizers'},
   'burn': {'library': 'libgstburn'},
   'claxon': {'library': 'libgstclaxon'},
   # csound has a non-trivial external dependency, see below
