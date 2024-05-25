@@ -13,6 +13,7 @@ DIRS = [
 # Plugins whose name is prefixed by 'rs'
 RS_PREFIXED = [
     'audiofx',
+    'audiovisualizers',
     'closedcaption',
     'file',
     'onvif',
