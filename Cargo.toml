@@ -9,6 +9,7 @@ members = [
 
     "audio/audiofx",
     "audio/audioparsers",
+    "audio/audiovisualizers",
     "audio/claxon",
     "audio/csound",
     "audio/elevenlabs",
@@ -79,6 +80,7 @@ default-members = [
 
     "audio/audioparsers",
     "audio/audiofx",
+    "audio/audiovisualizers",
     "audio/claxon",
     "audio/lewton",
 
