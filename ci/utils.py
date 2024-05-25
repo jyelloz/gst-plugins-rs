@@ -15,6 +15,7 @@ RS_PREFIXED = [
     'analytics',
     'audiofx',
     'audioparsers',
+    'audiovisualizers',
     'closedcaption',
     'file',
     'onvif',
