@@ -2,6 +2,7 @@
 
 # audio
 option('audiofx', type: 'feature', value: 'auto', description: 'Build audiofx plugin')
+option('audiovisualizers', type: 'feature', value: 'auto', description: 'Build audiovisualizers plugin')
 option('claxon', type: 'feature', value: 'auto', description: 'Build claxon plugin')
 option('csound', type: 'feature', value: 'auto', description: 'Build csound plugin')
 option('lewton', type: 'feature', value: 'auto', description: 'Build lewton plugin')

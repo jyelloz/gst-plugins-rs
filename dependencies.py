@@ -26,6 +26,7 @@ PARSER.add_argument('--gst-version', help="Get list of features to activate")
 # Map plugin name to directory name, for those that does not match.
 RENAMES = {
     'rsaudiofx': 'audiofx',
+    'rsaudiovisualizers': 'audiovisualizers',
     'rsfile': 'file',
     'rsflv': 'flavors',
     'rsrtp': 'rtp',

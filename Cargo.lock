@@ -1814,6 +1814,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "float-cmp"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "flume"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2295,6 +2304,21 @@ dependencies = [
  "once_cell",
  "rayon",
  "smallvec",
+]
+
+[[package]]
+name = "gst-plugin-audiovisualizers"
+version = "0.13.0-alpha.1"
+dependencies = [
+ "byte-slice-cast",
+ "gst-plugin-version-helper",
+ "gstreamer",
+ "gstreamer-audio",
+ "gstreamer-base",
+ "gstreamer-pbutils",
+ "gstreamer-video",
+ "once_cell",
+ "spectrum-analyzer",
 ]
 
 [[package]]
@@ -4727,6 +4751,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "microfft"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "556b5d8420cb2e761b21eedb5cae7525bf6838144151a3bec546e9969162dadc"
+dependencies = [
+ "cfg-if",
+ "num-complex",
+ "static_assertions",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6623,6 +6658,18 @@ dependencies = [
  "libc",
  "libsodium-sys",
  "serde",
+]
+
+[[package]]
+name = "spectrum-analyzer"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed9fa67f04b0a6424c19937498597aeb8a78fd9b20d3a010bc78b06f721f73e7"
+dependencies = [
+ "float-cmp",
+ "libm",
+ "microfft",
+ "paste",
 ]
 
 [[package]]

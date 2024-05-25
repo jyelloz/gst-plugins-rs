@@ -6199,6 +6199,44 @@
         "tracers": {},
         "url": "https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs"
     },
+    "rsaudiovisualizers": {
+        "description": "GStreamer Rust Audio Visualizers Plugin",
+        "elements": {
+            "audiospectrogram": {
+                "author": "Jordan Yelloz <jordan@yelloz.me>",
+                "description": "Renders a side-scrolling spectrogram of an audio stream",
+                "hierarchy": [
+                    "GstAudioSpectrogram",
+                    "GstAudioVisualizer",
+                    "GstElement",
+                    "GstObject",
+                    "GInitiallyUnowned",
+                    "GObject"
+                ],
+                "klass": "Visualization",
+                "pad-templates": {
+                    "sink": {
+                        "caps": "audio/x-raw:\n           rate: [ 1, 2147483647 ]\n       channels: 1\n         layout: { (string)interleaved, (string)non-interleaved }\n         format: F32LE\n",
+                        "direction": "sink",
+                        "presence": "always"
+                    },
+                    "src": {
+                        "caps": "video/x-raw:\n         format: GRAY8\n          width: [ 1, 2147483647 ]\n         height: [ 1, 2147483647 ]\n      framerate: [ 0/1, 2147483647/1 ]\n",
+                        "direction": "src",
+                        "presence": "always"
+                    }
+                },
+                "rank": "none"
+            }
+        },
+        "filename": "gstrsaudiovisualizers",
+        "license": "MPL-2.0",
+        "other-types": {},
+        "package": "gst-plugin-audiovisualizers",
+        "source": "gst-plugin-audiovisualizers",
+        "tracers": {},
+        "url": "https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs"
+    },
     "rsclosedcaption": {
         "description": "GStreamer Rust Closed Caption Plugin",
         "elements": {

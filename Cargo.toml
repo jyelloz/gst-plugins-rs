@@ -6,6 +6,7 @@ members = [
     "version-helper",
 
     "audio/audiofx",
+    "audio/audiovisualizers",
     "audio/claxon",
     "audio/csound",
     "audio/lewton",
@@ -67,6 +68,7 @@ default-members = [
     "version-helper",
 
     "audio/audiofx",
+    "audio/audiovisualizers",
     "audio/claxon",
     "audio/lewton",
 
