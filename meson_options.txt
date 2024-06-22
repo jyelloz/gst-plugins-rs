@@ -54,6 +54,7 @@ option('uriplaylistbin', type: 'feature', value: 'auto', description: 'Build uri
 
 # video
 option('cdg', type: 'feature', value: 'auto', description: 'Build cdg plugin')
+option('chafa', type: 'feature', value: 'auto', description: 'Build chafa plugin')
 option('closedcaption', type: 'feature', value: 'auto', description: 'Build closedcaption plugin')
 option('dav1d', type: 'feature', value: 'auto', description: 'Build dav1d plugin')
 option('ffv1', type: 'feature', value: 'auto', description: 'Build ffv1 plugin')

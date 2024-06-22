@@ -340,6 +340,16 @@ else
   }
 endif
 
+if get_option('chafa').allowed()
+  chafa_dep = dependency('chafa', required: get_option('chafa'))
+
+  plugins += {
+    'chafa': {
+      'library': 'libgstchafa',
+      'extra-deps': {'chafa': []},
+    },
+  }
+endif
 # Process plugins list
 
 default_library = get_option('default_library')
