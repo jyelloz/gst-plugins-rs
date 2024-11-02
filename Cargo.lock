@@ -77,6 +77,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anes"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "735d4f398ca57cfa2880225c2bf81c3b9af3be5bb22e44ae70118dad38713e84"
+
+[[package]]
 name = "anstream"
 version = "0.6.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1202,6 +1208,26 @@ name = "cfg_aliases"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
+
+[[package]]
+name = "chafa"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24886ec729b8f565fa4a1fba6e5a0769adb638f80f94d4edf5a3880000543dc1"
+dependencies = [
+ "chafa-sys",
+ "terminal_size",
+]
+
+[[package]]
+name = "chafa-sys"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51e36db8ca196da4f1600508a4251b44c9d870948660f8981163a76b9771443d"
+dependencies = [
+ "bindgen",
+ "pkg-config",
+]
 
 [[package]]
 name = "chrono"
@@ -2862,6 +2888,18 @@ dependencies = [
  "gstreamer-base",
  "gstreamer-video",
  "image",
+]
+
+[[package]]
+name = "gst-plugin-chafa"
+version = "0.14.0-alpha.1"
+dependencies = [
+ "anes",
+ "chafa",
+ "gst-plugin-version-helper",
+ "gstreamer",
+ "gstreamer-base",
+ "gstreamer-video",
 ]
 
 [[package]]
@@ -8114,6 +8152,16 @@ dependencies = [
  "once_cell",
  "rustix 1.0.8",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "terminal_size"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21bebf2b7c9e0a515f6e0f8c51dc0f8e4696391e6f1ff30379559f8365fb0df7"
+dependencies = [
+ "rustix",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

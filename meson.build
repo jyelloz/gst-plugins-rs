@@ -372,6 +372,17 @@ else
   }
 endif
 
+if get_option('chafa').allowed()
+  chafa_dep = dependency('chafa', required: get_option('chafa'))
+
+  plugins += {
+    'chafa': {
+      'library': 'libgstchafa',
+      'extra-deps': {'chafa': []},
+    },
+  }
+endif
+
 if get_option('skia').allowed()
   # Add harfbuzz and freetype dependencies for skia plugin on Linux
   if host_system == 'linux'
@@ -387,7 +398,6 @@ if get_option('skia').allowed()
     },
   }
 endif
-
 # Process plugins list
 
 default_library = get_option('default_library')

@@ -2520,6 +2520,40 @@
         "tracers": {},
         "url": "https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs"
     },
+    "chafa": {
+        "description": "Chafa terminal graphics sink",
+        "elements": {
+            "chafasink": {
+                "author": "Jordan Yelloz <jordan@yelloz.me>",
+                "description": "A Chafa terminal graphics sink",
+                "hierarchy": [
+                    "GstChafaSink",
+                    "GstVideoSink",
+                    "GstBaseSink",
+                    "GstElement",
+                    "GstObject",
+                    "GInitiallyUnowned",
+                    "GObject"
+                ],
+                "klass": "Sink/Video",
+                "pad-templates": {
+                    "sink": {
+                        "caps": "video/x-raw:\n         format: RGBA\n          width: [ 1, 2147483647 ]\n         height: [ 1, 2147483647 ]\n      framerate: [ 1/1, 2147483639/35791394 ]\n",
+                        "direction": "sink",
+                        "presence": "always"
+                    }
+                },
+                "rank": "none"
+            }
+        },
+        "filename": "gstchafa",
+        "license": "MPL-2.0",
+        "other-types": {},
+        "package": "gst-plugin-chafa",
+        "source": "gst-plugin-chafa",
+        "tracers": {},
+        "url": "https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs"
+    },
     "claxon": {
         "description": "GStreamer Claxon FLAC Decoder Plugin",
         "elements": {

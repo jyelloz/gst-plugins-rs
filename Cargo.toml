@@ -57,6 +57,7 @@ members = [
     "utils/uriplaylistbin",
 
     "video/cdg",
+    "video/chafa",
     "video/closedcaption",
     "video/dav1d",
     "video/ffv1",
