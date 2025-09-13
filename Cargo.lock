@@ -3190,6 +3190,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gst-plugin-loopfilesrcbin"
+version = "0.15.0-alpha.1"
+dependencies = [
+ "gst-plugin-version-helper",
+ "gstreamer",
+]
+
+[[package]]
 name = "gst-plugin-mp4"
 version = "0.15.0-alpha.1"
 dependencies = [
