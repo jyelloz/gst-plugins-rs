@@ -8,9 +8,11 @@
  */
 use gst::glib;
 
+mod audioridgeline;
 mod audiospectrogram;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
+    audioridgeline::register(plugin)?;
     audiospectrogram::register(plugin)?;
     Ok(())
 }

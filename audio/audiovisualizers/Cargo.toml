@@ -15,7 +15,9 @@ gst-audio = { workspace = true, features = ["v1_20"] }
 gst-video = { workspace = true, features = ["v1_20"] }
 gst-pbutils = { workspace = true, features = ["v1_20"] }
 byte-slice-cast = "1"
-spectrum-analyzer = "1.7"
+spectrum-analyzer = "2"
+plotters = { version = "0.3", default-features = false }
+cairo-rs = { workspace = true, features = ["v1_18"] }
 
 [lib]
 name = "gstrsaudiovisualizers"
