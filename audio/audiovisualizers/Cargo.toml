@@ -15,7 +15,17 @@ gst-audio = { workspace = true, features = ["v1_20"] }
 gst-video = { workspace = true, features = ["v1_20"] }
 gst-pbutils = { workspace = true, features = ["v1_20"] }
 byte-slice-cast = "1"
-spectrum-analyzer = "1.7"
+spectrum-analyzer = "2"
+plotters = { version = "0.3", default-features = false }
+
+[dependencies.vello]
+version = "0.10"
+default-features = false
+
+[dependencies.vello_cpu]
+version = "0.2"
+default-features = false
+features = ["std", "u8_pipeline"]
 
 [lib]
 name = "gstrsaudiovisualizers"
