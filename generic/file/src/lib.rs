@@ -19,6 +19,7 @@ use gst::glib;
 mod file_location;
 mod filesink;
 mod filesrc;
+mod repeatfilesrc;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     #[cfg(feature = "v1_30")]
@@ -26,6 +27,7 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
 
     filesink::register(plugin)?;
     filesrc::register(plugin)?;
+    repeatfilesrc::register(plugin)?;
     Ok(())
 }
 
