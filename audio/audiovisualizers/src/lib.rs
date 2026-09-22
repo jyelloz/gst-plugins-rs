@@ -10,10 +10,12 @@ use gst::glib;
 
 mod audioridgeline;
 mod audiospectrogram;
+mod skialine;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     audioridgeline::register(plugin)?;
     audiospectrogram::register(plugin)?;
+    skialine::register(plugin)?;
     Ok(())
 }
 
