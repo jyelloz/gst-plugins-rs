@@ -22,7 +22,7 @@ use gst_pbutils::{
 use gst_video::{VideoFrameExt as _, VideoFrameRef};
 use plotters::coord::{CoordTranslate, ranged3d::Cartesian3d, types::RangedCoordf64};
 use spectrum_analyzer::{FrequencyLimit, scaling::SpectrumDataStats};
-use vello::kurbo::{BezPath, Join, Point, Stroke};
+use vello::kurbo::{BezPath, Join, Point, Rect, Stroke};
 use vello_cpu::{
     PixmapMut, RenderContext, Resources,
     color::{OpaqueColor, palette::css},
@@ -274,8 +274,6 @@ impl AudioRidgeline {
         let height = video_frame.height() as i32;
         let plane = video_frame.plane_data_mut(0)?;
 
-        plane.fill(0);
-
         let n = history.len();
         if n == 0 {
             return Ok(());
@@ -289,6 +287,12 @@ impl AudioRidgeline {
             .ok_or(bool_error!("failed to map plane to pixmap"))?;
 
         ctx.reset();
+
+        let bg = css::BLACK;
+
+        let area = Rect::new(0.0, 0.0, width as f64, height as f64);
+        ctx.set_paint(bg);
+        ctx.fill_rect(&area);
 
         for (z, row) in history.iter().enumerate().map(|(z, h)| (z as f64, h)) {
             let mut iter = row.iter().enumerate().map(|(x, y)| (x as f64, *y as f64));
@@ -325,7 +329,7 @@ impl AudioRidgeline {
 
             let scale = (scale * 255.) as u8;
 
-            ctx.set_paint(css::BLACK);
+            ctx.set_paint(bg);
             ctx.fill_path(&under_ridgeline);
 
             ctx.set_paint(OpaqueColor::from_rgb8(scale, scale, scale));
