@@ -242,7 +242,7 @@ impl SkiaLine {
             .ok_or_else(|| gst::loggable_error!(gst::CAT_DEFAULT, "failed to wrap pixels"))?;
 
         let canvas = surface.canvas();
-        canvas.clear(skia::Color::BLUE);
+        canvas.clear(skia::Color::BLACK);
 
         let mut paint = skia::Paint::default();
         paint.set_color(skia::Color::WHITE);
