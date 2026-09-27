@@ -229,6 +229,14 @@ impl Settings {
     const STROKE_DEFAULT: f64 = 1.0;
     const NUM_LINES_DEFAULT: u64 = 32;
     const ANTIALIAS_DEFAULT: bool = true;
+
+    fn antialias_threshold(&self) -> Option<u8> {
+        if self.antialias {
+            None
+        } else {
+            Some(0x7f)
+        }
+    }
 }
 
 impl Default for Settings {
@@ -355,11 +363,7 @@ impl AudioRidgeline {
         let bg = css::BLACK;
 
         let ctx = &mut graphics.ctx;
-        let threshold = match settings.antialias {
-            true => None,
-            _ => Some(32),
-        };
-        ctx.set_aliasing_threshold(threshold);
+        ctx.set_aliasing_threshold(settings.antialias_threshold());
         let proj = Projection::new(
             width as i32,
             height as i32,
@@ -462,6 +466,13 @@ impl ObjectImpl for AudioRidgeline {
                     .mutable_playing()
                     .controllable()
                     .build(),
+                glib::ParamSpecBoolean::builder("anti-alias")
+                    .nick("Anti-alias")
+                    .blurb("When true, enables anti-aliased drawing")
+                    .default_value(Settings::ANTIALIAS_DEFAULT)
+                    .mutable_playing()
+                    .controllable()
+                    .build(),
                 glib::ParamSpecUInt64::builder("num-lines")
                     .nick("Number of Lines")
                     .blurb("Number of ridgeline samples to plot in the visualization")
@@ -493,6 +504,11 @@ impl ObjectImpl for AudioRidgeline {
                 let mut settings = self.settings.write().unwrap();
                 settings.stroke = stroke;
             }
+            "anti-alias" => {
+                let antialias = value.get::<bool>().expect("type checked upstream");
+                let mut settings = self.settings.write().unwrap();
+                settings.antialias = antialias;
+            }
             "num-lines" => {
                 let num_lines = value.get::<u64>().expect("type checked upstream");
                 let mut settings = self.settings.write().unwrap();
@@ -515,6 +531,10 @@ impl ObjectImpl for AudioRidgeline {
             "stroke" => {
                 let settings = self.settings.read().unwrap();
                 settings.stroke.to_value()
+            }
+            "anti-alias" => {
+                let settings = self.settings.read().unwrap();
+                settings.antialias.to_value()
             }
             "num-lines" => {
                 let settings = self.settings.read().unwrap();
