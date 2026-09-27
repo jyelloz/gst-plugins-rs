@@ -56,14 +56,14 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 struct Projection(Cartesian3d<RangedCoordf64, RangedCoordf64, RangedCoordf64>);
 
 impl Projection {
-    fn new(width: i32, height: i32) -> Self {
+    fn new(width: i32, height: i32, num_lines: usize) -> Self {
         let margin = 20;
         let actual_x = margin..(width - margin).max(margin + 1);
         let actual_y = margin..(height - margin).max(margin + 1);
         let proj = Cartesian3d::with_projection(
             0.0..(NUM_BINS as f64),
             0.0..10.0,
-            0.0..(NUM_LINES as f64),
+            0.0..(num_lines as f64),
             (actual_x, actual_y),
             |mut pb| {
                 pb.yaw = 0.5;
@@ -83,25 +83,23 @@ impl Projection {
 
 struct History {
     rows: VecDeque<[f32; NUM_BINS]>,
-    scroll_phase: f64,
-    scroll_step: f64,
+    num_lines: usize,
 }
 
 impl History {
-    fn new(scroll_step: f64) -> Self {
+    fn new(num_lines: usize) -> Self {
         let mut me = Self {
-            rows: VecDeque::with_capacity(NUM_LINES),
-            scroll_phase: 0.0,
-            scroll_step,
+            rows: VecDeque::with_capacity(num_lines),
+            num_lines,
         };
-        for _ in 0..NUM_LINES {
+        for _ in 0..num_lines {
             me.push([0f32; NUM_BINS]);
         }
         me
     }
 
     fn push(&mut self, row: [f32; NUM_BINS]) {
-        if self.rows.len() >= NUM_LINES {
+        if self.rows.len() >= self.num_lines {
             self.rows.pop_back();
         }
         self.rows.push_front(row);
@@ -125,11 +123,34 @@ struct Graphics {
 }
 
 impl Graphics {
-    fn new(width: i32, height: i32) -> Self {
+    fn new(width: i32, height: i32, num_lines: usize) -> Self {
         Self {
             ctx: vello_cpu::RenderContext::new(width as u16, height as u16),
             resources: Resources::default(),
-            proj: Projection::new(width, height),
+            proj: Projection::new(width, height, num_lines),
+        }
+    }
+}
+
+struct ScrollingAnimation {
+    phase: f64,
+    step: f64,
+}
+
+impl ScrollingAnimation {
+    fn new(step: f64) -> Self {
+        Self {
+            phase: 0.,
+            step,
+        }
+    }
+    fn advance(&mut self) -> bool {
+        self.phase += self.step;
+        if self.phase >= 1. {
+            self.phase -= 1.;
+            true
+        } else {
+            false
         }
     }
 }
@@ -151,6 +172,7 @@ fn scale_dbfs_to_normalized(dbfs: f32, _stats: &SpectrumDataStats) -> f32 {
 pub struct VelloLine {
     history: Mutex<Option<History>>,
     graphics: Mutex<Option<Graphics>>,
+    scroll: Mutex<Option<ScrollingAnimation>>,
 }
 
 impl VelloLine {
@@ -242,6 +264,7 @@ impl VelloLine {
         video_frame: &mut VideoFrameRef<&mut gst::BufferRef>,
         history: &mut History,
         graphics: &mut Graphics,
+        scroll: &ScrollingAnimation,
     ) -> Result<(), LoggableError> {
         let width = video_frame.width() as i32;
         let height = video_frame.height() as i32;
@@ -269,10 +292,10 @@ impl VelloLine {
                 continue;
             };
 
-            let distance_from_newest = (n - 1) as f64 - z + history.scroll_phase;
+            let distance_from_newest = (n - 1) as f64 - z + scroll.phase;
             let t_new = (distance_from_newest / SCALE_RAMP_LINES).clamp(0., 1.);
 
-            let distance_from_oldest = z + 1. - history.scroll_phase;
+            let distance_from_oldest = z + 1. - scroll.phase;
             let t_old = (distance_from_oldest / SCALE_RAMP_LINES).clamp(0., 1.);
 
             let scale_new = Self::ease(t_new);
@@ -281,7 +304,7 @@ impl VelloLine {
 
             let height_scaler = |y: f64| y * scale;
 
-            let z_f = z - history.scroll_phase;
+            let z_f = z - scroll.phase;
             let p = proj.project(x0, height_scaler(y0), z_f);
             let mut ridgeline = BezPath::with_capacity(row.len());
             ridgeline.move_to(p);
@@ -383,13 +406,17 @@ impl AudioVisualizerImpl for VelloLine {
         let width = video_info.width() as i32;
         let height = video_info.height() as i32;
 
-        let history = History::new(LINES_PER_SECOND * fps_d / fps_n);
+        let history = History::new(NUM_LINES);
 
         self.history.lock().unwrap().replace(history);
 
-        let graphics = Graphics::new(width, height);
+        let graphics = Graphics::new(width, height, NUM_LINES);
 
         self.graphics.lock().unwrap().replace(graphics);
+
+        let scroll = ScrollingAnimation::new(LINES_PER_SECOND * fps_d / fps_n);
+
+        self.scroll.lock().unwrap().replace(scroll);
 
         Ok(())
     }
@@ -407,13 +434,13 @@ impl AudioVisualizerImpl for VelloLine {
             .as_mut()
             .ok_or(bool_error!("history not yet available"))?;
 
-        history.scroll_phase += history.scroll_step;
-        if history.scroll_phase >= 1. {
-            history.scroll_phase -= 1.;
-            if let Some(bins) = self.analyze(audio_buffer)? {
-                history.push(bins);
-            }
+        let mut scroll_lock = self.scroll.lock().unwrap();
+        let scroll = scroll_lock.as_mut().ok_or(bool_error!("scrolling animation state not yet available"))?;
+
+        if scroll.advance() && let Some(bins) = self.analyze(audio_buffer)? {
+            history.push(bins);
         }
-        self.draw_frame(video_frame, history, graphics)
+
+        self.draw_frame(video_frame, history, graphics, scroll)
     }
 }
