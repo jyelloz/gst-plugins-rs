@@ -32,7 +32,7 @@ const WINDOW_SIZE: usize = 256;
 const NUM_BINS: usize = WINDOW_SIZE / 2;
 const SILENCE_THRESHOLD_DBFS: f32 = 90.0;
 const NUM_LINES: usize = 64;
-const LINES_PER_SECOND: f32 = 3.0;
+const LINES_PER_SECOND: f64 = 3.0;
 const SCALE_RAMP_LINES: f64 = 2.0;
 const STROKE_WIDTH: f64 = 1.0;
 
@@ -72,14 +72,24 @@ fn make_coord(width: i32, height: i32) -> Coord3D {
     )
 }
 
+struct F64Coord<'a>(&'a Coord3D);
+
+impl F64Coord<'_> {
+    fn project(&self, x: f64, y: f64, z: f64) -> Point {
+        let Self(coord) = self;
+        let (x_proj, y_proj) = coord.translate(&(x, y, z));
+        Point::new(x_proj as f64, y_proj as f64)
+    }
+}
+
 struct History {
     rows: VecDeque<[f32; NUM_BINS]>,
-    scroll_phase: f32,
-    scroll_step: f32,
+    scroll_phase: f64,
+    scroll_step: f64,
 }
 
 impl History {
-    fn new(scroll_step: f32) -> Self {
+    fn new(scroll_step: f64) -> Self {
         let mut me = Self {
             rows: VecDeque::with_capacity(NUM_LINES),
             scroll_phase: 0.0,
@@ -248,51 +258,50 @@ impl VelloLine {
         let stroke = Stroke::new(STROKE_WIDTH).with_join(Join::Round);
 
         let ctx = &mut state.ctx;
-        let coord = &state.coord;
+        let coord = F64Coord(&state.coord);
         let pixmap = PixmapMut::new(width as u16, height as u16, plane)
             .ok_or(bool_error!("failed to map plane to pixmap"))?;
 
         ctx.reset();
 
-        for (z, row) in history.iter().enumerate() {
-            let mut iter = row.iter().enumerate();
-            let Some((x0, &y0)) = iter.next() else {
+        for (z, row) in history.iter().enumerate().map(|(z, h)| (z as f64, h)) {
+            let mut iter = row.iter().enumerate().map(|(x, y)| (x as f64, *y as f64));
+            let Some((x0, y0)) = iter.next() else {
                 continue;
             };
 
-            let distance_from_newest = (n - 1 - z) as f64 + history.scroll_phase as f64;
+            let distance_from_newest = (n - 1) as f64 - z + history.scroll_phase;
             let t_new = (distance_from_newest / SCALE_RAMP_LINES).clamp(0.0, 1.0);
+
+            let distance_from_oldest = z + 1. - history.scroll_phase;
+            let t_old = (distance_from_oldest / SCALE_RAMP_LINES).clamp(0., 1.);
+
             let scale_new = Self::ease(t_new);
-
-            let distance_from_oldest = z as f64 + (1.0 - history.scroll_phase as f64);
-            let t_old = (distance_from_oldest / SCALE_RAMP_LINES).clamp(0.0, 1.0);
             let scale_old = Self::ease(t_old);
-
             let scale = scale_new.min(scale_old);
-            let scaler = |y: f32| y as f64 * scale;
 
-            let mut ridgeline = BezPath::with_capacity(row.len() + 2);
-            let z_f = z as f64 - history.scroll_phase as f64;
-            let (sx, sy) = coord.translate(&(x0 as f64, scaler(y0), z_f));
-            ridgeline.move_to(Point::new(sx as f64, sy as f64));
-            for (x, &y) in iter {
-                let (sx, sy) = coord.translate(&(x as f64, scaler(y), z_f));
-                ridgeline.line_to(Point::new(sx as f64, sy as f64));
+            let scaler = |y: f64| y * scale;
+
+            let z_f = z - history.scroll_phase;
+            let p = coord.project(x0, scaler(y0), z_f);
+            let mut ridgeline = BezPath::with_capacity(row.len());
+            ridgeline.move_to(p);
+            for (x, y) in iter.map(|(x, y)| (x, scaler(y))) {
+                let p = coord.project(x, y, z_f);
+                ridgeline.line_to(p);
             }
 
             let mut under_ridgeline = ridgeline.clone();
-            let (xmin, ymin) = coord.translate(&(0.0, 0.0, z_f));
-            let (xmax, ymax) = coord.translate(&(row.len() as f64, 0.0, z_f));
-            under_ridgeline.line_to(Point::new(xmax as f64, ymax as f64));
-            under_ridgeline.line_to(Point::new(xmin as f64, ymin as f64));
+            let bottom_left = coord.project(0., 0., z_f);
+            let bottom_right = coord.project(NUM_BINS as f64, 0., z_f);
+            under_ridgeline.line_to(bottom_right);
+            under_ridgeline.line_to(bottom_left);
 
             let scale = (scale * 255.) as u8;
 
-            ctx.set_aliasing_threshold(Some(1));
             ctx.set_paint(css::BLACK);
             ctx.fill_path(&under_ridgeline);
 
-            ctx.set_aliasing_threshold(Some(10));
             ctx.set_paint(OpaqueColor::from_rgb8(scale, scale, scale));
             ctx.set_stroke(stroke.clone());
             ctx.stroke_path(&ridgeline);
@@ -370,8 +379,8 @@ impl AudioVisualizerImpl for VelloLine {
         };
 
         let fps = video_info.fps();
-        let fps_n = fps.numer() as f32;
-        let fps_d = fps.denom() as f32;
+        let fps_n = fps.numer() as f64;
+        let fps_d = fps.denom() as f64;
         let width = video_info.width() as i32;
         let height = video_info.height() as i32;
 
@@ -400,8 +409,8 @@ impl AudioVisualizerImpl for VelloLine {
             .ok_or(bool_error!("history not yet available"))?;
 
         history.scroll_phase += history.scroll_step;
-        if history.scroll_phase >= 1.0 {
-            history.scroll_phase -= 1.0;
+        if history.scroll_phase >= 1. {
+            history.scroll_phase -= 1.;
             if let Some(bins) = self.analyze(audio_buffer)? {
                 history.push(bins);
             }
