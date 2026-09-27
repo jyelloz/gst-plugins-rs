@@ -52,7 +52,6 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     )
 });
 
-
 struct Projection(Cartesian3d<RangedCoordf64, RangedCoordf64, RangedCoordf64>);
 
 impl Projection {
@@ -139,10 +138,7 @@ struct ScrollingAnimation {
 
 impl ScrollingAnimation {
     fn new(step: f64) -> Self {
-        Self {
-            phase: 0.,
-            step,
-        }
+        Self { phase: 0., step }
     }
     fn advance(&mut self) -> bool {
         self.phase += self.step;
@@ -280,6 +276,7 @@ impl AudioRidgeline {
         }
 
         let stroke = Stroke::new(STROKE_WIDTH).with_join(Join::Round);
+        let bg = css::BLACK;
 
         let ctx = &mut graphics.ctx;
         let proj = &graphics.proj;
@@ -288,9 +285,7 @@ impl AudioRidgeline {
 
         ctx.reset();
 
-        let bg = css::BLACK;
-
-        let area = Rect::new(0.0, 0.0, width as f64, height as f64);
+        let area = Rect::new(0., 0., width as f64, height as f64);
         ctx.set_paint(bg);
         ctx.fill_rect(&area);
 
@@ -417,7 +412,11 @@ impl AudioVisualizerImpl for AudioRidgeline {
         let history = History::new(NUM_LINES);
         let graphics = Graphics::new(width, height, NUM_LINES);
         let scroll = ScrollingAnimation::new(LINES_PER_SECOND * fps_d / fps_n);
-        let state = State { history, graphics, scroll };
+        let state = State {
+            history,
+            graphics,
+            scroll,
+        };
 
         self.state.lock().unwrap().replace(state);
 
@@ -429,11 +428,17 @@ impl AudioVisualizerImpl for AudioRidgeline {
         video_frame: &mut VideoFrameRef<&mut gst::BufferRef>,
     ) -> Result<(), gst::LoggableError> {
         let mut state_lock = self.state.lock().unwrap();
-        let State { history, graphics, scroll } = state_lock
+        let State {
+            history,
+            graphics,
+            scroll,
+        } = state_lock
             .as_mut()
             .ok_or(bool_error!("element state not yet available"))?;
 
-        if scroll.advance() && let Some(bins) = self.analyze(audio_buffer)? {
+        if scroll.advance()
+            && let Some(bins) = self.analyze(audio_buffer)?
+        {
             history.push(bins);
         }
 
