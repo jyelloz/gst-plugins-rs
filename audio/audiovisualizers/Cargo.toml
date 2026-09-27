@@ -17,7 +17,6 @@ gst-pbutils = { workspace = true, features = ["v1_20"] }
 byte-slice-cast = "1"
 spectrum-analyzer = "2"
 plotters = { version = "0.3", default-features = false }
-cairo-rs = { workspace = true, features = ["v1_18"] }
 vello = "0.10"
 vello_cpu = "0.2"
 

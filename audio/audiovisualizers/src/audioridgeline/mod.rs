@@ -9,7 +9,9 @@ use gst::prelude::*;
 mod imp;
 
 const NAME: &str = "audioridgeline";
-const DESCRIPTION: &str = "2.5D Audio ridgeline plotter";
+const LONG_NAME: &str = "Audio Ridgeline Plot";
+const DESCRIPTION: &str = "Renders an animated 2.5D ridgeline plot of the incoming audio";
+const AUTHOR: &str = "Jordan Yelloz <jordan@yelloz.me>";
 
 glib::wrapper! {
     pub struct AudioRidgeline(ObjectSubclass<imp::AudioRidgeline>) @extends gst_pbutils::AudioVisualizer, gst::Element, gst::Object;
@@ -19,11 +21,7 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     /**
      * element-audioridgeline:
      *
-     * The `audioridgeline` renders a ridgeline plot of an audio stream.
-     *
      * ## Sample Pipelines
-     *
-     * Basic 3D spectrogram from your local audio capture source:
      *
      * ```shell
      * gst-launch-1.0 \
