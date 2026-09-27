@@ -31,9 +31,7 @@ use vello_cpu::{
 const WINDOW_SIZE: usize = 256;
 const NUM_BINS: usize = WINDOW_SIZE / 2;
 const SILENCE_THRESHOLD_DBFS: f32 = 90.0;
-const NUM_LINES: usize = 64;
-const LINES_PER_SECOND: f64 = 3.0;
-const SCALE_RAMP_LINES: f64 = 2.0;
+const FADE_LINES: f64 = 2.0;
 
 static HANN_WINDOW: LazyLock<[f32; WINDOW_SIZE]> = LazyLock::new(|| {
     std::array::from_fn(|i| {
@@ -222,12 +220,14 @@ struct Settings {
     pitch: f64,
     stroke: f64,
     antialias: bool,
+    num_lines: u64,
 }
 
 impl Settings {
     const YAW_DEFAULT: f64 = 30.0;
     const PITCH_DEFAULT: f64 = 30.0;
     const STROKE_DEFAULT: f64 = 1.0;
+    const NUM_LINES_DEFAULT: u64 = 32;
     const ANTIALIAS_DEFAULT: bool = true;
 }
 
@@ -238,6 +238,7 @@ impl Default for Settings {
             pitch: Self::PITCH_DEFAULT,
             stroke: Self::STROKE_DEFAULT,
             antialias: Self::ANTIALIAS_DEFAULT,
+            num_lines: Self::NUM_LINES_DEFAULT,
         }
     }
 }
@@ -344,8 +345,9 @@ impl AudioRidgeline {
         let height = video_frame.height() as u16;
         let plane = video_frame.plane_data_mut(0)?;
 
-        let n = history.len();
-        if n == 0 {
+        let num_lines = history.len();
+        let num_bins = history.num_bins();
+        if num_lines == 0 {
             return Ok(());
         }
 
@@ -361,8 +363,8 @@ impl AudioRidgeline {
         let proj = Projection::new(
             width as i32,
             height as i32,
-            history.num_bins(),
-            n,
+            num_bins,
+            num_lines,
             settings.yaw,
             settings.pitch,
         );
@@ -381,21 +383,19 @@ impl AudioRidgeline {
                 continue;
             };
 
-            let distance_from_newest = (n - 1) as f64 - z + scroll.phase;
-            let t_new = (distance_from_newest / SCALE_RAMP_LINES).clamp(0., 1.);
+            let distance_from_newest = (num_lines - 1) as f64 - z + scroll.phase;
+            let t_new = (distance_from_newest / FADE_LINES).clamp(0., 1.);
 
             let distance_from_oldest = z + 1. - scroll.phase;
-            let t_old = (distance_from_oldest / SCALE_RAMP_LINES).clamp(0., 1.);
+            let t_old = (distance_from_oldest / FADE_LINES).clamp(0., 1.);
 
-            let scale_new = Self::ease(t_new);
-            let scale_old = Self::ease(t_old);
-            let scale = scale_new.min(scale_old);
+            let scale = Self::ease(t_new.min(t_old));
 
             let height_scaler = |y: f64| y * scale;
 
             let z_f = z - scroll.phase;
             let p = proj.project(x0, height_scaler(y0), z_f);
-            let mut ridgeline = BezPath::with_capacity(row.len());
+            let mut ridgeline = BezPath::with_capacity(num_bins + 2);
             ridgeline.move_to(p);
             for (x, y) in iter.map(|(x, y)| (x, height_scaler(y))) {
                 let p = proj.project(x, y, z_f);
@@ -404,16 +404,16 @@ impl AudioRidgeline {
 
             let mut under_ridgeline = ridgeline.clone();
             let bottom_left = proj.project(0., 0., z_f);
-            let bottom_right = proj.project(NUM_BINS as f64, 0., z_f);
+            let bottom_right = proj.project(num_bins as f64, 0., z_f);
             under_ridgeline.line_to(bottom_right);
             under_ridgeline.line_to(bottom_left);
 
-            let scale = (scale * 255.) as u8;
+            let color = (scale * 255.) as u8;
 
             ctx.set_paint(bg);
             ctx.fill_path(&under_ridgeline);
 
-            ctx.set_paint(OpaqueColor::from_rgb8(scale, scale, scale));
+            ctx.set_paint(OpaqueColor::from_rgb8(color, color, color));
             ctx.set_stroke(stroke.clone());
             ctx.stroke_path(&ridgeline);
         }
@@ -462,6 +462,14 @@ impl ObjectImpl for AudioRidgeline {
                     .mutable_playing()
                     .controllable()
                     .build(),
+                glib::ParamSpecUInt64::builder("num-lines")
+                    .nick("Number of Lines")
+                    .blurb("Number of ridgeline samples to plot in the visualization")
+                    .minimum(1u64)
+                    .maximum(256u64)
+                    .default_value(Settings::NUM_LINES_DEFAULT)
+                    .mutable_ready()
+                    .build(),
             ]
         });
 
@@ -485,6 +493,11 @@ impl ObjectImpl for AudioRidgeline {
                 let mut settings = self.settings.write().unwrap();
                 settings.stroke = stroke;
             }
+            "num-lines" => {
+                let num_lines = value.get::<u64>().expect("type checked upstream");
+                let mut settings = self.settings.write().unwrap();
+                settings.num_lines = num_lines;
+            }
             _ => unimplemented!(),
         };
     }
@@ -502,6 +515,10 @@ impl ObjectImpl for AudioRidgeline {
             "stroke" => {
                 let settings = self.settings.read().unwrap();
                 settings.stroke.to_value()
+            }
+            "num-lines" => {
+                let settings = self.settings.read().unwrap();
+                settings.num_lines.to_value()
             }
             _ => unimplemented!(),
         }
@@ -572,9 +589,12 @@ impl AudioVisualizerImpl for AudioRidgeline {
         let width = video_info.width() as u16;
         let height = video_info.height() as u16;
 
-        let history = History::new(NUM_LINES);
+        let num_lines = self.settings.read().unwrap().num_lines;
+        let lines_per_second = num_lines as f64 / 10.;
+
+        let history = History::new(num_lines as usize);
         let graphics = Graphics::new(width, height);
-        let scroll = ScrollingAnimation::new(LINES_PER_SECOND * fps_d / fps_n);
+        let scroll = ScrollingAnimation::new(lines_per_second * fps_d / fps_n);
         let state = State {
             history,
             graphics,
