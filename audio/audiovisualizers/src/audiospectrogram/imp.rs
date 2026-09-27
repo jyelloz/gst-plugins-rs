@@ -11,12 +11,12 @@ use gst::{
 };
 use gst_audio::AudioBufferRef;
 use gst_pbutils::{
-    subclass::{prelude::*, AudioVisualizerSetupToken},
     AudioVisualizer,
+    subclass::{AudioVisualizerSetupToken, prelude::*},
 };
 use gst_video::{VideoFormat, VideoFrameExt as _, VideoFrameRef};
 use spectrum_analyzer::{
-    scaling::SpectrumDataStats, windows::hann_window, FrequencyLimit, FrequencySpectrum,
+    FrequencyLimit, FrequencySpectrum, scaling::SpectrumDataStats, windows::hann_window,
 };
 
 const WINDOW_SIZE: usize = 256;
