@@ -122,11 +122,11 @@ struct Graphics {
 }
 
 impl Graphics {
-    fn new(width: i32, height: i32, num_lines: usize) -> Self {
+    fn new(width: u16, height: u16, num_lines: usize) -> Self {
         Self {
-            ctx: vello_cpu::RenderContext::new(width as u16, height as u16),
+            ctx: vello_cpu::RenderContext::new(width, height),
             resources: Resources::default(),
-            proj: Projection::new(width, height, num_lines),
+            proj: Projection::new(width as i32, height as i32, num_lines),
         }
     }
 }
@@ -266,8 +266,8 @@ impl AudioRidgeline {
         graphics: &mut Graphics,
         scroll: &ScrollingAnimation,
     ) -> Result<(), LoggableError> {
-        let width = video_frame.width() as i32;
-        let height = video_frame.height() as i32;
+        let width = video_frame.width() as u16;
+        let height = video_frame.height() as u16;
         let plane = video_frame.plane_data_mut(0)?;
 
         let n = history.len();
@@ -280,7 +280,7 @@ impl AudioRidgeline {
 
         let ctx = &mut graphics.ctx;
         let proj = &graphics.proj;
-        let pixmap = PixmapMut::new(width as u16, height as u16, plane)
+        let pixmap = PixmapMut::new(width, height, plane)
             .ok_or(bool_error!("failed to map plane to pixmap"))?;
 
         ctx.reset();
@@ -370,6 +370,8 @@ impl ElementImpl for AudioRidgeline {
                 .build();
             let src_caps = gst_video::VideoCapsBuilder::new()
                 .format(gst_video::VideoFormat::Rgba)
+                .width_range(0..(u16::MAX as i32))
+                .height_range(0..(u16::MAX as i32))
                 .build();
 
             let sink_pad_template = gst::PadTemplate::new(
@@ -406,8 +408,8 @@ impl AudioVisualizerImpl for AudioRidgeline {
         let fps = video_info.fps();
         let fps_n = fps.numer() as f64;
         let fps_d = fps.denom() as f64;
-        let width = video_info.width() as i32;
-        let height = video_info.height() as i32;
+        let width = video_info.width() as u16;
+        let height = video_info.height() as u16;
 
         let history = History::new(NUM_LINES);
         let graphics = Graphics::new(width, height, NUM_LINES);
