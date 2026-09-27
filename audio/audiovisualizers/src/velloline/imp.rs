@@ -155,6 +155,12 @@ impl ScrollingAnimation {
     }
 }
 
+struct State {
+    history: History,
+    graphics: Graphics,
+    scroll: ScrollingAnimation,
+}
+
 fn scale_to_dbfs(amplitude: f32, _stats: &SpectrumDataStats) -> f32 {
     let normalized = amplitude.abs() / WINDOW_SIZE as f32;
     if normalized <= 0.0 {
@@ -170,9 +176,7 @@ fn scale_dbfs_to_normalized(dbfs: f32, _stats: &SpectrumDataStats) -> f32 {
 
 #[derive(Default)]
 pub struct VelloLine {
-    history: Mutex<Option<History>>,
-    graphics: Mutex<Option<Graphics>>,
-    scroll: Mutex<Option<ScrollingAnimation>>,
+    state: Mutex<Option<State>>,
 }
 
 impl VelloLine {
@@ -407,16 +411,11 @@ impl AudioVisualizerImpl for VelloLine {
         let height = video_info.height() as i32;
 
         let history = History::new(NUM_LINES);
-
-        self.history.lock().unwrap().replace(history);
-
         let graphics = Graphics::new(width, height, NUM_LINES);
-
-        self.graphics.lock().unwrap().replace(graphics);
-
         let scroll = ScrollingAnimation::new(LINES_PER_SECOND * fps_d / fps_n);
+        let state = State { history, graphics, scroll };
 
-        self.scroll.lock().unwrap().replace(scroll);
+        self.state.lock().unwrap().replace(state);
 
         Ok(())
     }
@@ -425,17 +424,10 @@ impl AudioVisualizerImpl for VelloLine {
         audio_buffer: &gst::BufferRef,
         video_frame: &mut VideoFrameRef<&mut gst::BufferRef>,
     ) -> Result<(), gst::LoggableError> {
-        let mut graphics_lock = self.graphics.lock().unwrap();
-        let graphics = graphics_lock
+        let mut state_lock = self.state.lock().unwrap();
+        let State { history, graphics, scroll } = state_lock
             .as_mut()
-            .ok_or(bool_error!("graphics state not yet available"))?;
-        let mut history_lock = self.history.lock().unwrap();
-        let history = history_lock
-            .as_mut()
-            .ok_or(bool_error!("history not yet available"))?;
-
-        let mut scroll_lock = self.scroll.lock().unwrap();
-        let scroll = scroll_lock.as_mut().ok_or(bool_error!("scrolling animation state not yet available"))?;
+            .ok_or(bool_error!("element state not yet available"))?;
 
         if scroll.advance() && let Some(bins) = self.analyze(audio_buffer)? {
             history.push(bins);
