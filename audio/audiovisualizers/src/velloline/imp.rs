@@ -52,32 +52,31 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     )
 });
 
-type Coord3D = Cartesian3d<RangedCoordf64, RangedCoordf64, RangedCoordf64>;
 
-fn make_coord(width: i32, height: i32) -> Coord3D {
-    let margin = 20;
-    let actual_x = margin..(width - margin).max(margin + 1);
-    let actual_y = margin..(height - margin).max(margin + 1);
-    Cartesian3d::with_projection(
-        0.0..(NUM_BINS as f64),
-        0.0..10.0,
-        0.0..(NUM_LINES as f64),
-        (actual_x, actual_y),
-        |mut pb| {
-            pb.yaw = 0.5;
-            pb.pitch = 0.5;
-            pb.scale = 0.7;
-            pb.into_matrix()
-        },
-    )
-}
+struct Projection(Cartesian3d<RangedCoordf64, RangedCoordf64, RangedCoordf64>);
 
-struct F64Coord<'a>(&'a Coord3D);
-
-impl F64Coord<'_> {
+impl Projection {
+    fn new(width: i32, height: i32) -> Self {
+        let margin = 20;
+        let actual_x = margin..(width - margin).max(margin + 1);
+        let actual_y = margin..(height - margin).max(margin + 1);
+        let proj = Cartesian3d::with_projection(
+            0.0..(NUM_BINS as f64),
+            0.0..10.0,
+            0.0..(NUM_LINES as f64),
+            (actual_x, actual_y),
+            |mut pb| {
+                pb.yaw = 0.5;
+                pb.pitch = 0.5;
+                pb.scale = 0.7;
+                pb.into_matrix()
+            },
+        );
+        Self(proj)
+    }
     fn project(&self, x: f64, y: f64, z: f64) -> Point {
-        let Self(coord) = self;
-        let (x_proj, y_proj) = coord.translate(&(x, y, z));
+        let Self(proj) = self;
+        let (x_proj, y_proj) = proj.translate(&(x, y, z));
         Point::new(x_proj as f64, y_proj as f64)
     }
 }
@@ -119,18 +118,18 @@ impl History {
     }
 }
 
-struct State {
+struct Graphics {
     ctx: RenderContext,
     resources: Resources,
-    coord: Coord3D,
+    proj: Projection,
 }
 
-impl State {
+impl Graphics {
     fn new(width: i32, height: i32) -> Self {
         Self {
             ctx: vello_cpu::RenderContext::new(width as u16, height as u16),
             resources: Resources::default(),
-            coord: make_coord(width, height),
+            proj: Projection::new(width, height),
         }
     }
 }
@@ -151,7 +150,7 @@ fn scale_dbfs_to_normalized(dbfs: f32, _stats: &SpectrumDataStats) -> f32 {
 #[derive(Default)]
 pub struct VelloLine {
     history: Mutex<Option<History>>,
-    state: Mutex<Option<State>>,
+    graphics: Mutex<Option<Graphics>>,
 }
 
 impl VelloLine {
@@ -242,7 +241,7 @@ impl VelloLine {
         &self,
         video_frame: &mut VideoFrameRef<&mut gst::BufferRef>,
         history: &mut History,
-        state: &mut State,
+        graphics: &mut Graphics,
     ) -> Result<(), LoggableError> {
         let width = video_frame.width() as i32;
         let height = video_frame.height() as i32;
@@ -257,8 +256,8 @@ impl VelloLine {
 
         let stroke = Stroke::new(STROKE_WIDTH).with_join(Join::Round);
 
-        let ctx = &mut state.ctx;
-        let coord = F64Coord(&state.coord);
+        let ctx = &mut graphics.ctx;
+        let proj = &graphics.proj;
         let pixmap = PixmapMut::new(width as u16, height as u16, plane)
             .ok_or(bool_error!("failed to map plane to pixmap"))?;
 
@@ -271,7 +270,7 @@ impl VelloLine {
             };
 
             let distance_from_newest = (n - 1) as f64 - z + history.scroll_phase;
-            let t_new = (distance_from_newest / SCALE_RAMP_LINES).clamp(0.0, 1.0);
+            let t_new = (distance_from_newest / SCALE_RAMP_LINES).clamp(0., 1.);
 
             let distance_from_oldest = z + 1. - history.scroll_phase;
             let t_old = (distance_from_oldest / SCALE_RAMP_LINES).clamp(0., 1.);
@@ -280,20 +279,20 @@ impl VelloLine {
             let scale_old = Self::ease(t_old);
             let scale = scale_new.min(scale_old);
 
-            let scaler = |y: f64| y * scale;
+            let height_scaler = |y: f64| y * scale;
 
             let z_f = z - history.scroll_phase;
-            let p = coord.project(x0, scaler(y0), z_f);
+            let p = proj.project(x0, height_scaler(y0), z_f);
             let mut ridgeline = BezPath::with_capacity(row.len());
             ridgeline.move_to(p);
-            for (x, y) in iter.map(|(x, y)| (x, scaler(y))) {
-                let p = coord.project(x, y, z_f);
+            for (x, y) in iter.map(|(x, y)| (x, height_scaler(y))) {
+                let p = proj.project(x, y, z_f);
                 ridgeline.line_to(p);
             }
 
             let mut under_ridgeline = ridgeline.clone();
-            let bottom_left = coord.project(0., 0., z_f);
-            let bottom_right = coord.project(NUM_BINS as f64, 0., z_f);
+            let bottom_left = proj.project(0., 0., z_f);
+            let bottom_right = proj.project(NUM_BINS as f64, 0., z_f);
             under_ridgeline.line_to(bottom_right);
             under_ridgeline.line_to(bottom_left);
 
@@ -308,7 +307,7 @@ impl VelloLine {
         }
 
         ctx.flush();
-        ctx.render(pixmap, &mut state.resources);
+        ctx.render(pixmap, &mut graphics.resources);
 
         Ok(())
     }
@@ -388,9 +387,9 @@ impl AudioVisualizerImpl for VelloLine {
 
         self.history.lock().unwrap().replace(history);
 
-        let state = State::new(width, height);
+        let graphics = Graphics::new(width, height);
 
-        self.state.lock().unwrap().replace(state);
+        self.graphics.lock().unwrap().replace(graphics);
 
         Ok(())
     }
@@ -399,10 +398,10 @@ impl AudioVisualizerImpl for VelloLine {
         audio_buffer: &gst::BufferRef,
         video_frame: &mut VideoFrameRef<&mut gst::BufferRef>,
     ) -> Result<(), gst::LoggableError> {
-        let mut state_lock = self.state.lock().unwrap();
-        let state = state_lock
+        let mut graphics_lock = self.graphics.lock().unwrap();
+        let graphics = graphics_lock
             .as_mut()
-            .ok_or(bool_error!("state not yet available"))?;
+            .ok_or(bool_error!("graphics state not yet available"))?;
         let mut history_lock = self.history.lock().unwrap();
         let history = history_lock
             .as_mut()
@@ -415,6 +414,6 @@ impl AudioVisualizerImpl for VelloLine {
                 history.push(bins);
             }
         }
-        self.draw_frame(video_frame, history, state)
+        self.draw_frame(video_frame, history, graphics)
     }
 }
