@@ -231,11 +231,7 @@ impl Settings {
     const ANTIALIAS_DEFAULT: bool = true;
 
     fn antialias_threshold(&self) -> Option<u8> {
-        if self.antialias {
-            None
-        } else {
-            Some(0x7f)
-        }
+        if self.antialias { None } else { Some(0x7f) }
     }
 }
 
