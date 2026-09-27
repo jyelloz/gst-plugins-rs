@@ -55,19 +55,24 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 struct Projection(Cartesian3d<RangedCoordf64, RangedCoordf64, RangedCoordf64>);
 
 impl Projection {
-    fn new(width: i32, height: i32, num_lines: usize) -> Self {
-        let margin = 20;
-        let actual_x = margin..(width - margin).max(margin + 1);
-        let actual_y = margin..(height - margin).max(margin + 1);
+    fn new(width: i32, height: i32, num_bins: usize, num_lines: usize) -> Self {
+        let range_x = (0.0, (num_bins as f64));
+        let range_y = (0.0, 10.);
+        let range_z = (0.0, (num_lines as f64));
+
+        let min_dim = i32::min(width, height) as f64;
+        let min_dim = min_dim * 0.8;
+        let prism = Prism::new(min_dim, min_dim, min_dim);
+        let scale = prism.fit_scale(width as f64, height as f64, 0.);
         let proj = Cartesian3d::with_projection(
-            0.0..(NUM_BINS as f64),
-            0.0..10.0,
+            0.0..(num_bins as f64),
+            0.0..10.,
             0.0..(num_lines as f64),
-            (actual_x, actual_y),
+            (0..width, 0..height),
             |mut pb| {
-                pb.yaw = 0.5;
-                pb.pitch = 0.5;
-                pb.scale = 0.7;
+                pb.yaw = 30f64.to_radians();
+                pb.pitch = 30f64.to_radians();
+                pb.scale = scale;
                 pb.into_matrix()
             },
         );
@@ -115,6 +120,39 @@ impl History {
     }
 }
 
+struct Prism {
+    lx: f64,
+    ly: f64,
+    lz: f64,
+}
+
+impl Prism {
+    fn new(lx: f64, ly: f64, lz: f64) -> Self {
+        Self {
+            lx: lx.abs(),
+            ly: ly.abs(),
+            lz: lz.abs(),
+        }
+    }
+
+    #[inline]
+    fn max_extent(&self) -> f64 {
+        (self.lx * self.lx + self.ly * self.ly + self.lz * self.lz).sqrt()
+    }
+
+    fn fit_scale(&self, frame_width: f64, frame_height: f64, margin: f64) -> f64 {
+        let max_dim = self.max_extent();
+        if max_dim == 0.0 {
+            return 1.0;
+        }
+
+        let usable_w = (frame_width - 2.0 * margin).max(0.0);
+        let usable_h = (frame_height - 2.0 * margin).max(0.0);
+
+        usable_w.min(usable_h) / max_dim
+    }
+}
+
 struct Graphics {
     ctx: RenderContext,
     resources: Resources,
@@ -122,11 +160,11 @@ struct Graphics {
 }
 
 impl Graphics {
-    fn new(width: u16, height: u16, num_lines: usize) -> Self {
+    fn new(width: u16, height: u16, num_bins: usize, num_lines: usize) -> Self {
         Self {
             ctx: vello_cpu::RenderContext::new(width, height),
             resources: Resources::default(),
-            proj: Projection::new(width as i32, height as i32, num_lines),
+            proj: Projection::new(width as i32, height as i32, num_bins, num_lines),
         }
     }
 }
@@ -412,7 +450,7 @@ impl AudioVisualizerImpl for AudioRidgeline {
         let height = video_info.height() as u16;
 
         let history = History::new(NUM_LINES);
-        let graphics = Graphics::new(width, height, NUM_LINES);
+        let graphics = Graphics::new(width, height, NUM_BINS, NUM_LINES);
         let scroll = ScrollingAnimation::new(LINES_PER_SECOND * fps_d / fps_n);
         let state = State {
             history,
