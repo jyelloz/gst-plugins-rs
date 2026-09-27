@@ -4,7 +4,7 @@ use std::{
     collections::{VecDeque, vec_deque::Iter},
     f64,
     iter::Rev,
-    sync::{LazyLock, Mutex},
+    sync::{LazyLock, Mutex, RwLock},
 };
 
 use byte_slice_cast::AsSliceOf as _;
@@ -34,7 +34,6 @@ const SILENCE_THRESHOLD_DBFS: f32 = 90.0;
 const NUM_LINES: usize = 64;
 const LINES_PER_SECOND: f64 = 3.0;
 const SCALE_RAMP_LINES: f64 = 2.0;
-const STROKE_WIDTH: f64 = 1.0;
 
 static HANN_WINDOW: LazyLock<[f32; WINDOW_SIZE]> = LazyLock::new(|| {
     std::array::from_fn(|i| {
@@ -55,14 +54,16 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 struct Projection(Cartesian3d<RangedCoordf64, RangedCoordf64, RangedCoordf64>);
 
 impl Projection {
-    fn new(width: i32, height: i32, num_bins: usize, num_lines: usize) -> Self {
-        let range_x = (0.0, (num_bins as f64));
-        let range_y = (0.0, 10.);
-        let range_z = (0.0, (num_lines as f64));
-
-        let min_dim = i32::min(width, height) as f64;
-        let min_dim = min_dim * 0.8;
-        let prism = Prism::new(min_dim, min_dim, min_dim);
+    fn new(
+        width: i32,
+        height: i32,
+        num_bins: usize,
+        num_lines: usize,
+        yaw: f64,
+        pitch: f64,
+    ) -> Self {
+        let min = i32::min(width, height) as f64;
+        let prism = Prism::cube(min);
         let scale = prism.fit_scale(width as f64, height as f64, 0.);
         let proj = Cartesian3d::with_projection(
             0.0..(num_bins as f64),
@@ -70,8 +71,8 @@ impl Projection {
             0.0..(num_lines as f64),
             (0..width, 0..height),
             |mut pb| {
-                pb.yaw = 30f64.to_radians();
-                pb.pitch = 30f64.to_radians();
+                pb.yaw = yaw.to_radians();
+                pb.pitch = pitch.to_radians();
                 pb.scale = scale;
                 pb.into_matrix()
             },
@@ -116,7 +117,12 @@ impl History {
 
     #[inline]
     fn len(&self) -> usize {
-        self.rows.len()
+        self.num_lines
+    }
+
+    #[inline]
+    const fn num_bins(&self) -> usize {
+        NUM_BINS
     }
 }
 
@@ -133,6 +139,10 @@ impl Prism {
             ly: ly.abs(),
             lz: lz.abs(),
         }
+    }
+
+    fn cube(l: f64) -> Self {
+        Self::new(l, l, l)
     }
 
     #[inline]
@@ -156,15 +166,13 @@ impl Prism {
 struct Graphics {
     ctx: RenderContext,
     resources: Resources,
-    proj: Projection,
 }
 
 impl Graphics {
-    fn new(width: u16, height: u16, num_bins: usize, num_lines: usize) -> Self {
+    fn new(width: u16, height: u16) -> Self {
         Self {
-            ctx: vello_cpu::RenderContext::new(width, height),
+            ctx: RenderContext::new(width, height),
             resources: Resources::default(),
-            proj: Projection::new(width as i32, height as i32, num_bins, num_lines),
         }
     }
 }
@@ -208,9 +216,36 @@ fn scale_dbfs_to_normalized(dbfs: f32, _stats: &SpectrumDataStats) -> f32 {
     (dbfs + SILENCE_THRESHOLD_DBFS).max(0f32) * _stats.n / SILENCE_THRESHOLD_DBFS
 }
 
+#[derive(Clone, Copy)]
+struct Settings {
+    yaw: f64,
+    pitch: f64,
+    stroke: f64,
+    antialias: bool,
+}
+
+impl Settings {
+    const YAW_DEFAULT: f64 = 30.0;
+    const PITCH_DEFAULT: f64 = 30.0;
+    const STROKE_DEFAULT: f64 = 1.0;
+    const ANTIALIAS_DEFAULT: bool = true;
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            yaw: Self::YAW_DEFAULT,
+            pitch: Self::PITCH_DEFAULT,
+            stroke: Self::STROKE_DEFAULT,
+            antialias: Self::ANTIALIAS_DEFAULT,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct AudioRidgeline {
     state: Mutex<Option<State>>,
+    settings: RwLock<Settings>,
 }
 
 impl AudioRidgeline {
@@ -303,6 +338,7 @@ impl AudioRidgeline {
         history: &mut History,
         graphics: &mut Graphics,
         scroll: &ScrollingAnimation,
+        settings: Settings,
     ) -> Result<(), LoggableError> {
         let width = video_frame.width() as u16;
         let height = video_frame.height() as u16;
@@ -313,11 +349,23 @@ impl AudioRidgeline {
             return Ok(());
         }
 
-        let stroke = Stroke::new(STROKE_WIDTH).with_join(Join::Round);
+        let stroke = Stroke::new(settings.stroke).with_join(Join::Round);
         let bg = css::BLACK;
 
         let ctx = &mut graphics.ctx;
-        let proj = &graphics.proj;
+        let threshold = match settings.antialias {
+            true => None,
+            _ => Some(32),
+        };
+        ctx.set_aliasing_threshold(threshold);
+        let proj = Projection::new(
+            width as i32,
+            height as i32,
+            history.num_bins(),
+            n,
+            settings.yaw,
+            settings.pitch,
+        );
         let pixmap = PixmapMut::new(width, height, plane)
             .ok_or(bool_error!("failed to map plane to pixmap"))?;
 
@@ -384,7 +432,82 @@ impl ObjectSubclass for AudioRidgeline {
     type ParentType = AudioVisualizer;
 }
 
-impl ObjectImpl for AudioRidgeline {}
+impl ObjectImpl for AudioRidgeline {
+    fn properties() -> &'static [glib::ParamSpec] {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
+            vec![
+                glib::ParamSpecDouble::builder("yaw")
+                    .nick("Yaw")
+                    .blurb("Rotation around the Y axis in degrees")
+                    .minimum(-360.)
+                    .maximum(360.)
+                    .default_value(Settings::YAW_DEFAULT)
+                    .mutable_playing()
+                    .controllable()
+                    .build(),
+                glib::ParamSpecDouble::builder("pitch")
+                    .nick("Pitch")
+                    .blurb("Rotation around the X axis in degrees")
+                    .minimum(-360.)
+                    .maximum(360.)
+                    .default_value(Settings::PITCH_DEFAULT)
+                    .mutable_playing()
+                    .controllable()
+                    .build(),
+                glib::ParamSpecDouble::builder("stroke")
+                    .nick("Stroke Width")
+                    .blurb("Thickness of ridgelines")
+                    .minimum(0.)
+                    .default_value(Settings::STROKE_DEFAULT)
+                    .mutable_playing()
+                    .controllable()
+                    .build(),
+            ]
+        });
+
+        PROPERTIES.as_ref()
+    }
+
+    fn set_property(&self, _: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
+        match pspec.name() {
+            "yaw" => {
+                let yaw = value.get::<f64>().expect("type checked upstream");
+                let mut settings = self.settings.write().unwrap();
+                settings.yaw = yaw;
+            }
+            "pitch" => {
+                let pitch = value.get::<f64>().expect("type checked upstream");
+                let mut settings = self.settings.write().unwrap();
+                settings.pitch = pitch;
+            }
+            "stroke" => {
+                let stroke = value.get::<f64>().expect("type checked upstream");
+                let mut settings = self.settings.write().unwrap();
+                settings.stroke = stroke;
+            }
+            _ => unimplemented!(),
+        };
+    }
+
+    fn property(&self, _: usize, pspec: &glib::ParamSpec) -> glib::Value {
+        match pspec.name() {
+            "yaw" => {
+                let settings = self.settings.read().unwrap();
+                settings.yaw.to_value()
+            }
+            "pitch" => {
+                let settings = self.settings.read().unwrap();
+                settings.pitch.to_value()
+            }
+            "stroke" => {
+                let settings = self.settings.read().unwrap();
+                settings.stroke.to_value()
+            }
+            _ => unimplemented!(),
+        }
+    }
+}
+
 impl GstObjectImpl for AudioRidgeline {}
 
 impl ElementImpl for AudioRidgeline {
@@ -450,7 +573,7 @@ impl AudioVisualizerImpl for AudioRidgeline {
         let height = video_info.height() as u16;
 
         let history = History::new(NUM_LINES);
-        let graphics = Graphics::new(width, height, NUM_BINS, NUM_LINES);
+        let graphics = Graphics::new(width, height);
         let scroll = ScrollingAnimation::new(LINES_PER_SECOND * fps_d / fps_n);
         let state = State {
             history,
@@ -476,12 +599,14 @@ impl AudioVisualizerImpl for AudioRidgeline {
             .as_mut()
             .ok_or(bool_error!("element state not yet available"))?;
 
+        let settings = *self.settings.read().unwrap();
+
         if scroll.advance()
             && let Some(bins) = self.analyze(audio_buffer)?
         {
             history.push(bins);
         }
 
-        self.draw_frame(video_frame, history, graphics, scroll)
+        self.draw_frame(video_frame, history, graphics, scroll, settings)
     }
 }
