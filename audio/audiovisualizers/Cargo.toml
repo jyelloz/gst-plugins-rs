@@ -18,7 +18,11 @@ byte-slice-cast = "1"
 spectrum-analyzer = "2"
 plotters = { version = "0.3", default-features = false }
 vello = "0.10"
-vello_cpu = "0.2"
+
+[dependencies.vello_cpu]
+version = "0.2"
+default-features = false
+features = ["std", "u8_pipeline", "multithreading"]
 
 [lib]
 name = "gstrsaudiovisualizers"
