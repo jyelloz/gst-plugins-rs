@@ -3,7 +3,6 @@
 
 use std::sync::{LazyLock, Mutex};
 
-use byte_slice_cast::AsSliceOf as _;
 use gst::{
     glib::{self, bool_error},
     prelude::*,
@@ -15,20 +14,11 @@ use gst_pbutils::{
     subclass::{AudioVisualizerSetupToken, prelude::*},
 };
 use gst_video::{VideoFormat, VideoFrameExt as _, VideoFrameRef};
-use spectrum_analyzer::{
-    FrequencyLimit, FrequencySpectrum, scaling::SpectrumDataStats, windows::hann_window,
-};
+use spectrum_analyzer::FrequencySpectrum;
+
+use crate::spectrum::analyze_sample;
 
 const WINDOW_SIZE: usize = 256;
-const SILENCE_THRESHOLD_DBFS: f32 = 90f32;
-
-static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
-    gst::DebugCategory::new(
-        super::NAME,
-        gst::DebugColorFlags::empty(),
-        Some(super::DESCRIPTION),
-    )
-});
 
 type BoolResult<T> = Result<T, glib::BoolError>;
 
@@ -37,7 +27,6 @@ struct Scratchpad {
     current_column: usize,
     width: usize,
     height: usize,
-    last_render_pts: Option<gst::ClockTime>,
 }
 
 impl Scratchpad {
@@ -48,7 +37,6 @@ impl Scratchpad {
             current_column: 0,
             width,
             height,
-            last_render_pts: None,
         }
     }
     fn next(&mut self) {
@@ -88,19 +76,6 @@ pub struct AudioSpectrogram {
     scratchpad: Mutex<Option<Scratchpad>>,
 }
 
-fn scale_to_dbfs(amplitude: f32, _stats: &SpectrumDataStats) -> f32 {
-    let normalized = amplitude.abs() / WINDOW_SIZE as f32;
-    if normalized <= 0.0 {
-        -SILENCE_THRESHOLD_DBFS
-    } else {
-        (20.0 * normalized.log10()).max(-SILENCE_THRESHOLD_DBFS)
-    }
-}
-
-fn scale_dbfs_to_gray(dbfs: f32, _stats: &SpectrumDataStats) -> f32 {
-    ((dbfs + SILENCE_THRESHOLD_DBFS).max(0f32) * 255f32) / SILENCE_THRESHOLD_DBFS
-}
-
 impl AudioSpectrogram {
     fn sinkpad(&self) -> Option<gst::Pad> {
         self.obj().static_pad("sink")
@@ -126,45 +101,10 @@ impl AudioSpectrogram {
         let caps = self.video_caps()?;
         gst_video::VideoInfo::from_caps(&caps).ok()
     }
-    fn min_render_interval(&self, audio_info: &gst_audio::AudioInfo) -> Option<gst::ClockTime> {
-        let fps = self.video_info()?.fps();
-        if fps.numer() <= 0 {
-            return None;
-        }
-        let from_fps =
-            gst::ClockTime::SECOND.mul_div_ceil(fps.denom() as u64, fps.numer() as u64)?;
-        let from_window =
-            gst::ClockTime::SECOND.mul_div_ceil(WINDOW_SIZE as u64, audio_info.rate() as u64)?;
-        Some(from_fps.max(from_window))
-    }
     fn analyze(&self, buffer: &gst::BufferRef) -> BoolResult<Option<FrequencySpectrum>> {
         let audio_info = self.require_audio_info()?;
-        let bpf = audio_info.bpf() as usize;
-        let window_bytes = bpf * WINDOW_SIZE;
-        let size_bytes = buffer.size();
-        if size_bytes < window_bytes {
-            gst::debug!(CAT, imp = self, "not enough data for FFT, skipping");
-            return Ok(None);
-        }
-        let offset = size_bytes - window_bytes;
-        let sub_buffer = buffer.copy_region(gst::BufferCopyFlags::MEMORY, offset..)?;
-        let audio_buffer = AudioBufferRef::from_buffer_ref_readable(&sub_buffer, &audio_info)?;
-        let rate = audio_info.rate();
-        let bytes = audio_buffer.plane_data(0)?;
-        let window = bytes
-            .as_slice_of::<f32>()
-            .map(hann_window)
-            .map_err(|e| bool_error!("failed to interpret audio buffer as f32 array: {e:?}"))?;
-
-        let scaler = |val: f32, stats: &_| scale_dbfs_to_gray(scale_to_dbfs(val, stats), stats);
-        spectrum_analyzer::samples_fft_to_spectrum(
-            &window,
-            rate,
-            FrequencyLimit::All,
-            Some(&scaler),
-        )
-        .map(Some)
-        .map_err(|e| bool_error!("failed to analyze sample: {:?}", e))
+        let audio_buffer = AudioBufferRef::from_buffer_ref_readable(buffer, &audio_info)?;
+        analyze_sample(audio_buffer)
     }
 
     #[inline]
@@ -281,21 +221,6 @@ impl AudioVisualizerImpl for AudioSpectrogram {
         audio_buffer: &gst::BufferRef,
         video_frame: &mut VideoFrameRef<&mut gst::BufferRef>,
     ) -> Result<(), gst::LoggableError> {
-        if let (Some(pts), Some(audio_info)) = (audio_buffer.pts(), self.audio_info()) {
-            if let Some(interval) = self.min_render_interval(&audio_info) {
-                let mut lock = self.scratchpad.lock().unwrap();
-                if let Some(scratch) = lock.as_mut() {
-                    if scratch
-                        .last_render_pts
-                        .and_then(|last| last.checked_add(interval))
-                        .is_some_and(|threshold| pts < threshold)
-                    {
-                        return Ok(scratch.copy_into(video_frame)?);
-                    }
-                    scratch.last_render_pts = Some(pts);
-                }
-            }
-        }
         let Some(sample) = self.analyze(audio_buffer)? else {
             return Ok(());
         };
