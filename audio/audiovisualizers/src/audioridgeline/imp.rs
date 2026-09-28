@@ -440,8 +440,8 @@ impl ElementImpl for AudioRidgeline {
                 .build();
             let src_caps = gst_video::VideoCapsBuilder::new()
                 .format(gst_video::VideoFormat::Rgba)
-                .width_range(0..(u16::MAX as i32))
-                .height_range(0..(u16::MAX as i32))
+                .width_range(1..(u16::MAX as i32))
+                .height_range(1..(u16::MAX as i32))
                 .build();
 
             let sink_pad_template = gst::PadTemplate::new(
