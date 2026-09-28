@@ -1,13 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use std::{
-    collections::{VecDeque, vec_deque::Iter},
-    f64,
-    iter::Rev,
-    sync::{LazyLock, Mutex, RwLock},
-};
+use std::sync::{LazyLock, Mutex, RwLock};
 
-use byte_slice_cast::AsSliceOf as _;
 use gst::{
     LoggableError,
     glib::{self, BoolError, bool_error},
@@ -21,33 +15,15 @@ use gst_pbutils::{
 };
 use gst_video::{VideoFrameExt as _, VideoFrameRef};
 use plotters::coord::{CoordTranslate, ranged3d::Cartesian3d, types::RangedCoordf64};
-use spectrum_analyzer::{FrequencyLimit, scaling::SpectrumDataStats};
 use vello::kurbo::{BezPath, Join, Point, Rect, Stroke};
 use vello_cpu::{
     PixmapMut, RenderContext, Resources,
     color::{OpaqueColor, palette::css},
 };
 
-const WINDOW_SIZE: usize = 256;
-const NUM_BINS: usize = WINDOW_SIZE / 2;
-const SILENCE_THRESHOLD_DBFS: f32 = 90.0;
+use crate::spectrum::History;
+
 const FADE_LINES: f64 = 2.0;
-
-static HANN_WINDOW: LazyLock<[f32; WINDOW_SIZE]> = LazyLock::new(|| {
-    std::array::from_fn(|i| {
-        let two_pi_i = 2.0 * std::f32::consts::PI * i as f32;
-        let c = (two_pi_i / WINDOW_SIZE as f32).cos();
-        0.5 * (1.0 - c)
-    })
-});
-
-static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
-    gst::DebugCategory::new(
-        super::NAME,
-        gst::DebugColorFlags::empty(),
-        Some(super::DESCRIPTION),
-    )
-});
 
 struct Projection(Cartesian3d<RangedCoordf64, RangedCoordf64, RangedCoordf64>);
 
@@ -65,7 +41,7 @@ impl Projection {
         let scale = prism.fit_scale(width as f64, height as f64, 0.);
         let proj = Cartesian3d::with_projection(
             0.0..(num_bins as f64),
-            0.0..10.,
+            0.0..1000.,
             0.0..(num_lines as f64),
             (0..width, 0..height),
             |mut pb| {
@@ -81,46 +57,6 @@ impl Projection {
         let Self(proj) = self;
         let (x_proj, y_proj) = proj.translate(&(x, y, z));
         Point::new(x_proj as f64, y_proj as f64)
-    }
-}
-
-struct History {
-    rows: VecDeque<[f32; NUM_BINS]>,
-    num_lines: usize,
-}
-
-impl History {
-    fn new(num_lines: usize) -> Self {
-        let mut me = Self {
-            rows: VecDeque::with_capacity(num_lines),
-            num_lines,
-        };
-        for _ in 0..num_lines {
-            me.push([0f32; NUM_BINS]);
-        }
-        me
-    }
-
-    fn push(&mut self, row: [f32; NUM_BINS]) {
-        if self.rows.len() >= self.num_lines {
-            self.rows.pop_back();
-        }
-        self.rows.push_front(row);
-    }
-
-    #[inline]
-    fn iter(&self) -> Rev<Iter<'_, [f32; NUM_BINS]>> {
-        self.rows.iter().rev()
-    }
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.num_lines
-    }
-
-    #[inline]
-    const fn num_bins(&self) -> usize {
-        NUM_BINS
     }
 }
 
@@ -201,19 +137,6 @@ struct State {
     scroll: ScrollingAnimation,
 }
 
-fn scale_to_dbfs(amplitude: f32, _stats: &SpectrumDataStats) -> f32 {
-    let normalized = amplitude.abs() / WINDOW_SIZE as f32;
-    if normalized <= 0.0 {
-        -SILENCE_THRESHOLD_DBFS
-    } else {
-        (20.0 * normalized.log10()).max(-SILENCE_THRESHOLD_DBFS)
-    }
-}
-
-fn scale_dbfs_to_normalized(dbfs: f32, _stats: &SpectrumDataStats) -> f32 {
-    (dbfs + SILENCE_THRESHOLD_DBFS).max(0f32) * _stats.n / SILENCE_THRESHOLD_DBFS
-}
-
 #[derive(Clone, Copy)]
 struct Settings {
     yaw: f64,
@@ -231,7 +154,7 @@ impl Settings {
     const ANTIALIAS_DEFAULT: bool = true;
 
     fn antialias_threshold(&self) -> Option<u8> {
-        if self.antialias { None } else { Some(0x7f) }
+        if self.antialias { None } else { Some(0x80) }
     }
 }
 
@@ -285,53 +208,6 @@ impl AudioRidgeline {
         gst_video::VideoInfo::from_caps(&caps).ok()
     }
 
-    fn analyze(&self, buffer: &gst::BufferRef) -> Result<Option<[f32; NUM_BINS]>, BoolError> {
-        let audio_info = self.require_audio_info()?;
-        let audio_buffer = AudioBufferRef::from_buffer_ref_readable(buffer, &audio_info)?;
-        let bytes = audio_buffer.plane_data(0)?;
-        let samples = bytes
-            .as_slice_of::<f32>()
-            .map_err(|e| bool_error!("failed to interpret audio buffer as f32 array: {e:?}"))?;
-
-        if samples.len() < WINDOW_SIZE {
-            gst::debug!(CAT, imp = self, "not enough data for FFT, skipping");
-            return Ok(None);
-        }
-
-        let window_samples = &samples[samples.len() - WINDOW_SIZE..];
-        let window: [f32; WINDOW_SIZE] =
-            std::array::from_fn(|i| window_samples[i] * HANN_WINDOW[i]);
-        let rate = audio_info.rate();
-
-        let scaler =
-            |val: f32, stats: &_| scale_dbfs_to_normalized(scale_to_dbfs(val, stats), stats);
-        let spectrum = spectrum_analyzer::samples_fft_to_spectrum(
-            &window,
-            rate,
-            FrequencyLimit::All,
-            Some(&scaler),
-        )
-        .map_err(|e| bool_error!("failed to analyze sample: {:?}", e))?;
-
-        let data = spectrum.data();
-        let mut bins = [0.0f32; NUM_BINS];
-        for (i, bin) in bins.iter_mut().enumerate() {
-            if let Some((_, v)) = data.get(i) {
-                *bin = v.val();
-            }
-        }
-
-        let max_val = bins.iter().copied().fold(0.0f32, f32::max);
-
-        let divisor = max_val.max(0.05);
-
-        for bin in &mut bins {
-            *bin /= divisor;
-        }
-
-        Ok(Some(bins))
-    }
-
     #[inline]
     fn ease(val: f64) -> f64 {
         val * val * (3.0 - 2.0 * val)
@@ -359,7 +235,6 @@ impl AudioRidgeline {
         let bg = css::BLACK;
 
         let ctx = &mut graphics.ctx;
-        ctx.set_aliasing_threshold(settings.antialias_threshold());
         let proj = Projection::new(
             width as i32,
             height as i32,
@@ -371,6 +246,7 @@ impl AudioRidgeline {
         let pixmap = PixmapMut::new(width, height, plane)
             .ok_or(bool_error!("failed to map plane to pixmap"))?;
 
+        ctx.set_aliasing_threshold(settings.antialias_threshold());
         ctx.reset();
 
         let area = Rect::new(0., 0., width as f64, height as f64);
@@ -626,6 +502,7 @@ impl AudioVisualizerImpl for AudioRidgeline {
         audio_buffer: &gst::BufferRef,
         video_frame: &mut VideoFrameRef<&mut gst::BufferRef>,
     ) -> Result<(), gst::LoggableError> {
+        let info = self.require_audio_info()?;
         let mut state_lock = self.state.lock().unwrap();
         let State {
             history,
@@ -637,10 +514,10 @@ impl AudioVisualizerImpl for AudioRidgeline {
 
         let settings = *self.settings.read().unwrap();
 
-        if scroll.advance()
-            && let Some(bins) = self.analyze(audio_buffer)?
-        {
-            history.push(bins);
+        let audio_buffer = AudioBufferRef::from_buffer_ref_readable(audio_buffer, &info)?;
+
+        if scroll.advance() {
+            history.analyze(audio_buffer)?;
         }
 
         self.draw_frame(video_frame, history, graphics, scroll, settings)

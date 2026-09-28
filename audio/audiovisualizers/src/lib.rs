@@ -10,6 +10,7 @@ use gst::glib;
 
 mod audioridgeline;
 mod audiospectrogram;
+mod spectrum;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     audioridgeline::register(plugin)?;
