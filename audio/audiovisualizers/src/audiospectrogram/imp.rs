@@ -14,11 +14,8 @@ use gst_pbutils::{
     subclass::{AudioVisualizerSetupToken, prelude::*},
 };
 use gst_video::{VideoFormat, VideoFrameExt as _, VideoFrameRef};
-use spectrum_analyzer::FrequencySpectrum;
 
 use crate::spectrum::analyze_sample;
-
-const WINDOW_SIZE: usize = 256;
 
 type BoolResult<T> = Result<T, glib::BoolError>;
 
@@ -101,41 +98,36 @@ impl AudioSpectrogram {
         let caps = self.video_caps()?;
         gst_video::VideoInfo::from_caps(&caps).ok()
     }
-    fn analyze(&self, buffer: &gst::BufferRef) -> BoolResult<Option<FrequencySpectrum>> {
-        let audio_info = self.require_audio_info()?;
-        let audio_buffer = AudioBufferRef::from_buffer_ref_readable(buffer, &audio_info)?;
-        analyze_sample(audio_buffer)
-    }
 
     #[inline]
-    const fn row_to_bin(row: u32, height: u32) -> usize {
-        let max_bin = (WINDOW_SIZE / 2 - 1) as u32;
+    const fn row_to_bin(row: u32, size: u32, height: u32) -> usize {
+        let max_bin = size - 1;
         (max_bin - (row * max_bin / height)) as usize
     }
 
     fn draw_column(
         &self,
-        sample: &FrequencySpectrum,
+        sample: &[f32],
         stride: u32,
         pstride: u32,
         height: u32,
         column: u32,
         plane: &mut [u8],
     ) {
-        let data = sample.data();
+        let size = sample.len() as u32;
         let column_offset = (column * pstride) as usize;
         for row in 0..height {
-            let bin = Self::row_to_bin(row, height);
-            let (_freq, color) = &data[bin];
+            let bin = Self::row_to_bin(row, size, height);
+            let color = sample[bin];
             let row_offset = (row * stride) as usize;
             let pixel = &mut plane[row_offset + column_offset..];
-            pixel[0] = color.val() as u8;
+            pixel[0] = color as u8;
         }
     }
 
     fn visualize(
         &self,
-        sample: &FrequencySpectrum,
+        sample: &[f32],
         video_frame: &mut VideoFrameRef<&mut gst::BufferRef>,
     ) -> BoolResult<()> {
         let mut scratch_lock = self.scratchpad.lock().unwrap();
@@ -221,7 +213,9 @@ impl AudioVisualizerImpl for AudioSpectrogram {
         audio_buffer: &gst::BufferRef,
         video_frame: &mut VideoFrameRef<&mut gst::BufferRef>,
     ) -> Result<(), gst::LoggableError> {
-        let Some(sample) = self.analyze(audio_buffer)? else {
+        let audio_info = self.require_audio_info()?;
+        let audio_buffer = AudioBufferRef::from_buffer_ref_readable(audio_buffer, &audio_info)?;
+        let Some(sample) = analyze_sample(audio_buffer)? else {
             return Ok(());
         };
         self.visualize(&sample, video_frame)?;
