@@ -9,8 +9,8 @@ use gst::glib::{BoolError, bool_error};
 use gst_audio::AudioBufferRef;
 use spectrum_analyzer::{FrequencyLimit, scaling::SpectrumDataStats};
 
-pub(crate) const WINDOW_SIZE: usize = 256;
-pub(crate) const NUM_BINS: usize = WINDOW_SIZE / 2;
+const WINDOW_SIZE: usize = 256;
+const NUM_BINS: usize = WINDOW_SIZE / 2;
 const SILENCE_THRESHOLD_DBFS: f32 = 90.0;
 
 static HANN_WINDOW: LazyLock<[f32; WINDOW_SIZE]> = LazyLock::new(|| {
