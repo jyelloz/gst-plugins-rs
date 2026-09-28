@@ -7,10 +7,10 @@ use std::{
 use byte_slice_cast::AsSliceOf as _;
 use gst::glib::{BoolError, bool_error};
 use gst_audio::AudioBufferRef;
-use spectrum_analyzer::{FrequencyLimit, FrequencySpectrum, scaling::SpectrumDataStats};
+use spectrum_analyzer::{FrequencyLimit, scaling::SpectrumDataStats};
 
-const WINDOW_SIZE: usize = 256;
-const NUM_BINS: usize = WINDOW_SIZE / 2;
+pub(crate) const WINDOW_SIZE: usize = 256;
+pub(crate) const NUM_BINS: usize = WINDOW_SIZE / 2;
 const SILENCE_THRESHOLD_DBFS: f32 = 90.0;
 
 static HANN_WINDOW: LazyLock<[f32; WINDOW_SIZE]> = LazyLock::new(|| {
@@ -81,17 +81,10 @@ impl History {
         &mut self,
         buffer: AudioBufferRef<&'_ gst::BufferRef>,
     ) -> Result<bool, BoolError> {
-        let Some(spectrum) = analyze_sample(buffer)? else {
+        let Some(bins) = analyze_sample(buffer)? else {
             self.push([0f32; NUM_BINS]);
             return Ok(false);
         };
-        let data = spectrum.data();
-        let mut bins = [0.0f32; NUM_BINS];
-        for (i, bin) in bins.iter_mut().enumerate() {
-            if let Some((_, v)) = data.get(i) {
-                *bin = v.val();
-            }
-        }
         self.push(bins);
         Ok(true)
     }
@@ -99,7 +92,7 @@ impl History {
 
 pub(crate) fn analyze_sample(
     buffer: AudioBufferRef<&'_ gst::BufferRef>,
-) -> Result<Option<FrequencySpectrum>, BoolError> {
+) -> Result<Option<[f32; NUM_BINS]>, BoolError> {
     let audio_info = buffer.info();
     let bytes = buffer.plane_data(0)?;
     let samples = bytes
@@ -124,5 +117,12 @@ pub(crate) fn analyze_sample(
     )
     .map_err(|e| bool_error!("failed to analyze sample: {:?}", e))?;
 
-    Ok(Some(spectrum))
+    let data = spectrum.data();
+    let mut bins = [0.0f32; NUM_BINS];
+    for (i, bin) in bins.iter_mut().enumerate() {
+        if let Some((_, v)) = data.get(i) {
+            *bin = v.val();
+        }
+    }
+    Ok(Some(bins))
 }
