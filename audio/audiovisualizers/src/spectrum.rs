@@ -27,7 +27,7 @@ pub(crate) const fn empty_sample() -> [f32; NUM_BINS] {
 }
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
-    gst::DebugCategory::new("rsaudiovisulizers", gst::DebugColorFlags::empty(), None)
+    gst::DebugCategory::new("rsaudiovisualizers", gst::DebugColorFlags::empty(), None)
 });
 
 fn scale_to_dbfs(amplitude: f32, _: &SpectrumDataStats) -> f32 {
