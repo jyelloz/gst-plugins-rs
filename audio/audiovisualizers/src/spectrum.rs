@@ -4,6 +4,7 @@ use std::{
     sync::LazyLock,
 };
 
+use crate::CAT;
 use byte_slice_cast::AsSliceOf as _;
 use gst::glib::{BoolError, bool_error};
 use gst_audio::AudioBufferRef;
@@ -25,10 +26,6 @@ static HANN_WINDOW: LazyLock<[f32; WINDOW_SIZE]> = LazyLock::new(|| {
 pub(crate) const fn empty_sample() -> [f32; NUM_BINS] {
     [0f32; NUM_BINS]
 }
-
-static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
-    gst::DebugCategory::new("rsaudiovisualizers", gst::DebugColorFlags::empty(), None)
-});
 
 fn scale_to_dbfs(amplitude: f32, _: &SpectrumDataStats) -> f32 {
     let normalized = amplitude.abs() / WINDOW_SIZE as f32;

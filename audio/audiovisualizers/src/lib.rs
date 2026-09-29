@@ -7,10 +7,15 @@
  *
  */
 use gst::glib;
+use std::sync::LazyLock;
 
 mod audioridgeline;
 mod audiospectrogram;
 mod spectrum;
+
+pub(crate) static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
+    gst::DebugCategory::new("rsaudiovisualizers", gst::DebugColorFlags::empty(), None)
+});
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     audioridgeline::register(plugin)?;
