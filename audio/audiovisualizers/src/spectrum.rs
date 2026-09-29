@@ -120,7 +120,7 @@ pub(crate) fn analyze_sample(
     .map_err(|e| bool_error!("failed to analyze sample: {:?}", e))?;
 
     let data = spectrum.data();
-    let mut bins = [0.0f32; NUM_BINS];
+    let mut bins = empty_sample();
     for (i, bin) in bins.iter_mut().enumerate() {
         if let Some((_, v)) = data.get(i) {
             *bin = v.val();
