@@ -21,6 +21,11 @@ static HANN_WINDOW: LazyLock<[f32; WINDOW_SIZE]> = LazyLock::new(|| {
     })
 });
 
+#[inline]
+pub(crate) const fn empty_sample() -> [f32; NUM_BINS] {
+    [0f32; NUM_BINS]
+}
+
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new("rsaudiovisulizers", gst::DebugColorFlags::empty(), None)
 });
@@ -50,12 +55,12 @@ impl History {
             num_lines,
         };
         for _ in 0..num_lines {
-            me.push([0f32; NUM_BINS]);
+            me.push(empty_sample());
         }
         me
     }
 
-    pub(crate) fn push(&mut self, row: [f32; NUM_BINS]) {
+    fn push(&mut self, row: [f32; NUM_BINS]) {
         if self.rows.len() >= self.num_lines {
             self.rows.pop_back();
         }
@@ -81,10 +86,7 @@ impl History {
         &mut self,
         buffer: AudioBufferRef<&'_ gst::BufferRef>,
     ) -> Result<bool, BoolError> {
-        let Some(bins) = analyze_sample(buffer)? else {
-            self.push([0f32; NUM_BINS]);
-            return Ok(false);
-        };
+        let bins = analyze_sample(buffer)?.unwrap_or_else(empty_sample);
         self.push(bins);
         Ok(true)
     }

@@ -15,7 +15,7 @@ use gst_pbutils::{
 };
 use gst_video::{VideoFormat, VideoFrameExt as _, VideoFrameRef};
 
-use crate::spectrum::analyze_sample;
+use crate::spectrum::{analyze_sample, empty_sample};
 
 type BoolResult<T> = Result<T, glib::BoolError>;
 
@@ -215,9 +215,7 @@ impl AudioVisualizerImpl for AudioSpectrogram {
     ) -> Result<(), gst::LoggableError> {
         let audio_info = self.require_audio_info()?;
         let audio_buffer = AudioBufferRef::from_buffer_ref_readable(audio_buffer, &audio_info)?;
-        let Some(sample) = analyze_sample(audio_buffer)? else {
-            return Ok(());
-        };
+        let sample = analyze_sample(audio_buffer)?.unwrap_or_else(empty_sample);
         self.visualize(&sample, video_frame)?;
         Ok(())
     }
