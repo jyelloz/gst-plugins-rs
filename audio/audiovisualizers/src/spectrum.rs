@@ -30,7 +30,7 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new("rsaudiovisulizers", gst::DebugColorFlags::empty(), None)
 });
 
-fn scale_to_dbfs(amplitude: f32, _stats: &SpectrumDataStats) -> f32 {
+fn scale_to_dbfs(amplitude: f32, _: &SpectrumDataStats) -> f32 {
     let normalized = amplitude.abs() / WINDOW_SIZE as f32;
     if normalized <= 0.0 {
         -SILENCE_THRESHOLD_DBFS
@@ -39,8 +39,8 @@ fn scale_to_dbfs(amplitude: f32, _stats: &SpectrumDataStats) -> f32 {
     }
 }
 
-fn scale_dbfs_to_normalized(dbfs: f32, _stats: &SpectrumDataStats) -> f32 {
-    (dbfs + SILENCE_THRESHOLD_DBFS).max(0f32) * _stats.n / SILENCE_THRESHOLD_DBFS
+fn scale_dbfs_to_normalized(dbfs: f32, stats: &SpectrumDataStats) -> f32 {
+    (dbfs + SILENCE_THRESHOLD_DBFS).max(0f32) * stats.n / SILENCE_THRESHOLD_DBFS
 }
 
 pub(crate) struct History {
